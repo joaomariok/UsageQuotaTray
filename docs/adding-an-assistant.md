@@ -84,4 +84,4 @@ cargo test --workspace
 cargo deny check
 ```
 
-Note that Windows paths in the Slint build are long; set `CARGO_TARGET_DIR` to a short path such as `C:/t/uqt`.
+Slint's build paths are long. If the repo sits in a deeply nested folder and the build fails on `MAX_PATH`, set `CARGO_TARGET_DIR` to a short path.

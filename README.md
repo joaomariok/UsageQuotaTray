@@ -57,12 +57,13 @@ Config folders: `CLAUDE_CONFIG_DIR` if set, otherwise `%USERPROFILE%\.claude`, p
 
 ## Build and test
 
-Rust stable (MSVC) on Windows. The deep Slint paths can hit `MAX_PATH`, so use a short target directory.
+Rust stable (MSVC) on Windows. Builds go to `target/` in the repo.
 
 ```powershell
-$env:CARGO_TARGET_DIR = "C:/t/uqt"
 cargo build --release
 ```
+
+Slint's build paths are long. If the repo sits in a deeply nested folder and the build fails on `MAX_PATH`, set `CARGO_TARGET_DIR` to a short path.
 
 The gate, run each separately; all four must pass:
 
