@@ -7,6 +7,7 @@
 pub mod badge;
 pub mod icon;
 pub mod lifecycle;
+pub mod nav;
 mod notify;
 mod platform;
 pub mod present;

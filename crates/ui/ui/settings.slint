@@ -3,7 +3,11 @@
 // Rows come pre-built from Rust (present/settings.rs); this file only lays them out.
 // Fluent style; follows the system light or dark theme.
 
-import { TabWidget, CheckBox, LineEdit, Button, ComboBox, Switch, ScrollView, Palette } from "std-widgets.slint";
+import { CheckBox, LineEdit, Button, ComboBox, Switch, ScrollView, Palette } from "std-widgets.slint";
+import { NavList, NavLogic } from "components/nav_list.slint";
+import { Card, NavPage } from "components/card.slint";
+
+export { NavLogic }
 
 export struct SettingRowData {
     // 0 Assistant switch, 1 Account switch, 2 Meter (Featured checkbox and thresholds),
@@ -41,6 +45,8 @@ export component SettingsWindow inherits Window {
     callback reset-notifications-toggled(bool);
     callback start-with-windows-toggled(bool);
     callback remove-requested(bool);
+    // The selected settings page: 0 Assistants, 1 Alerts, 2 About.
+    in-out property <int> page: 0;
 
     title: "UsageQuotaTray settings";
     preferred-width: 600px;
@@ -50,9 +56,16 @@ export component SettingsWindow inherits Window {
     background: Palette.background;
     default-font-family: "Segoe UI Variable Text";
 
-    TabWidget {
-        Tab {
-            title: "Assistants";
+    HorizontalLayout {
+        NavList {
+            items: ["Assistants", "Alerts", "About"];
+            current-index <=> root.page;
+        }
+
+        Rectangle {
+        NavPage {
+            index: 0;
+            current: root.page;
             ScrollView {
                 VerticalLayout {
                     padding: 16px;
@@ -79,10 +92,8 @@ export component SettingsWindow inherits Window {
                                 }
                             }
                         }
-                        if row.kind == 1: VerticalLayout {
-                            padding-left: 12px;
-                            padding-top: 4px;
-                            spacing: 2px;
+                        if row.kind == 1: Card {
+                            inner-spacing: 2px;
                             HorizontalLayout {
                                 spacing: 12px;
                                 Text {
@@ -106,8 +117,9 @@ export component SettingsWindow inherits Window {
                                 text: row.detail;
                             }
                         }
-                        if row.kind == 2: HorizontalLayout {
-                            padding-left: 24px;
+                        if row.kind == 2: Card {
+                            inner-padding: 8px;
+                            HorizontalLayout {
                             spacing: 12px;
                             CheckBox {
                                 text: row.label;
@@ -135,10 +147,9 @@ export component SettingsWindow inherits Window {
                                 text: row.detail;
                                 vertical-alignment: center;
                             }
+                            }
                         }
-                        if row.kind == 3: VerticalLayout {
-                            padding-left: 12px;
-                            padding-top: 6px;
+                        if row.kind == 3: Card {
                             HorizontalLayout {
                                 spacing: 12px;
                                 Text {
@@ -160,10 +171,7 @@ export component SettingsWindow inherits Window {
                                 text: row.detail;
                             }
                         }
-                        if row.kind == 4: VerticalLayout {
-                            padding-left: 12px;
-                            padding-top: 6px;
-                            spacing: 4px;
+                        if row.kind == 4: Card {
                             Text {
                                 text: row.label;
                                 color: Palette.foreground;
@@ -194,12 +202,14 @@ export component SettingsWindow inherits Window {
             }
         }
 
-        Tab {
-            title: "Alerts";
+        NavPage {
+            index: 1;
+            current: root.page;
             VerticalLayout {
                 padding: 16px;
                 spacing: 12px;
                 alignment: start;
+                Card {
                 Text {
                     text: "Polling while you are at this PC";
                     color: Palette.foreground;
@@ -219,6 +229,8 @@ export component SettingsWindow inherits Window {
                 Caption {
                     text: "Alerts fire at 75%, 90% and 100% of each limit unless a Meter sets its own thresholds on the Assistants page.";
                 }
+                }
+                Card {
                 Switch {
                     text: "Notify when a window resets";
                     checked: root.reset-notifications;
@@ -236,11 +248,13 @@ export component SettingsWindow inherits Window {
                         root.start-with-windows-toggled(self.checked);
                     }
                 }
+                }
             }
         }
 
-        Tab {
-            title: "About";
+        NavPage {
+            index: 2;
+            current: root.page;
             VerticalLayout {
                 padding: 16px;
                 spacing: 12px;
@@ -254,6 +268,7 @@ export component SettingsWindow inherits Window {
                 Caption {
                     text: "Settings, logs and Badge overrides are in " + root.data-folder;
                 }
+                Card {
                 Text {
                     text: "Remove UsageQuotaTray from this PC";
                     color: Palette.foreground;
@@ -271,7 +286,9 @@ export component SettingsWindow inherits Window {
                         root.remove-requested(delete-data.checked);
                     }
                 }
+                }
             }
+        }
         }
     }
 }

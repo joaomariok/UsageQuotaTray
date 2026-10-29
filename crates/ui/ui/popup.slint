@@ -19,6 +19,13 @@ component Bar inherits Rectangle {
     in property <float> fraction;
     in property <color> fill;
     in property <color> track;
+    // Read by screen readers as "<label>, <percent>".
+    in property <string> label;
+    accessible-role: progress-indicator;
+    accessible-label: root.label;
+    accessible-value: Math.round(min(max(root.fraction, 0), 1) * 100) + "%";
+    accessible-value-minimum: 0;
+    accessible-value-maximum: 100;
     height: 6px;
     border-radius: 3px;
     background: root.track;
@@ -53,6 +60,8 @@ export component Popup inherits Window {
     default-font-family: "Segoe UI Variable Text";
 
     FocusScope {
+        accessible-role: list;
+        accessible-label: "Usage";
         key-pressed(event) => {
             if (event.text == Key.Escape) {
                 root.dismiss();
@@ -108,6 +117,7 @@ export component Popup inherits Window {
                     }
                     if row.has-bar: Bar {
                         fraction: row.fraction;
+                        label: row.title;
                         track: root.track;
                         fill: row.stale ? root.fg2 : (row.tone == 2 ? #d73a49 : (row.tone == 1 ? #e3a008 : root.accent));
                     }

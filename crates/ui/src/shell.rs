@@ -644,6 +644,31 @@ fn measurement_timers(
         });
         timers.push(hide);
     }
+    // Screenshot runs: UQT_SHOT=popup keeps the popup open, UQT_SHOT=settings opens the
+    // settings window once the first state has arrived. Dev aid; never set in normal use.
+    match std::env::var("UQT_SHOT").as_deref() {
+        Ok("popup") => {
+            let open = Timer::default();
+            let weak = popup.as_weak();
+            let style = style_timer.clone();
+            open.start(TimerMode::SingleShot, Duration::from_secs(1), move || {
+                if let Some(p) = weak.upgrade() {
+                    show_popup(&p, &style);
+                }
+            });
+            timers.push(open);
+        }
+        Ok("settings") => {
+            let open = Timer::default();
+            open.start(
+                TimerMode::SingleShot,
+                Duration::from_secs(1),
+                settings_window::open,
+            );
+            timers.push(open);
+        }
+        _ => {}
+    }
     if options.icon_churn {
         let churn = Timer::default();
         let start = Instant::now();
