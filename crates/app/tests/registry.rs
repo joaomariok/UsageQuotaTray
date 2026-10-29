@@ -2,7 +2,8 @@
 
 use uqt_app::{ModuleOptions, all_modules, enabled_modules, fake_failure};
 use uqt_core::contract::FetchError;
-use uqt_ui::badge::validate_badge_svg;
+use uqt_ui::badge::{validate_badge_svg, with_default_fill};
+use uqt_ui::icon::{IconStyle, render_rgba};
 
 #[test]
 fn every_registered_module_badge_follows_the_badge_rules() {
@@ -12,6 +13,24 @@ fn every_registered_module_badge_follows_the_badge_rules() {
         assert_eq!(validate_badge_svg(m.badge().svg), Ok(()), "{}", m.id());
         let letters = m.badge().letters.chars().count();
         assert!((1..=2).contains(&letters), "{}", m.id());
+    }
+}
+
+#[test]
+fn every_registered_module_badge_draws_in_its_color() {
+    let size = 32;
+    for m in &all_modules() {
+        let badge = m.badge();
+        let hex = |i: usize| u8::from_str_radix(&badge.color[i..i + 2], 16).unwrap();
+        let color = [hex(1), hex(3), hex(5)];
+        let svg = with_default_fill(badge.svg, badge.color);
+        let rgba = render_rgba(size, &[], &svg, IconStyle::DarkTaskbar);
+        assert!(
+            rgba.chunks(4).any(|p| p[3] == 255 && p[..3] == color),
+            "{} draws no pixel in {}",
+            m.id(),
+            badge.color
+        );
     }
 }
 

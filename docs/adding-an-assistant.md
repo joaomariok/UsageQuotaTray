@@ -19,7 +19,7 @@ Implement `uqt_core::contract::Assistant`:
 - `id`: stable, lowercase. It is also the Badge override file name and the settings key, so never change it later.
 - `display_name`, `usage_page`.
 - `allowed_hosts`: every host any of your Sources may call. The `HostClient` refuses anything else, plain `http`, URLs with credentials, and does not follow redirects. Declare the fewest hosts you can.
-- `badge`: an SVG plus one or two fallback letters and a `#RRGGBB` color. Rules: square `viewBox`, filled paths only, no text, strokes, gradients, filters, images or external references. The app test validates every registered Badge.
+- `badge`: an SVG plus one or two fallback letters and a `#RRGGBB` color. Rules: square `viewBox`, filled paths only (`title` and `desc` are allowed), no text, strokes, gradients, filters, images or external references. Paths without a fill are drawn in `color`, so a monochrome logo can ship unaltered. The app test validates every registered Badge.
 - `suggested_featured`: up to two Meter keys featured until the user chooses.
 - `discover_accounts`: one `AccountInfo` per login. The id must be the maker's identity for the login (not the folder it was found in) and must be the same on every call. A new identity is a new Account.
 - `sources`: the Sources for an Account. Called once per new Account.

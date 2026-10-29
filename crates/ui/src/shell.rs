@@ -27,7 +27,7 @@ use uqt_core::time::Clock;
 pub(crate) use autostart::set as set_autostart;
 pub use dev_hooks::{DevHooks, Shot};
 
-use crate::badge::resolve_badge;
+use crate::badge::{BadgeOrigin, resolve_badge, with_default_fill};
 use crate::icon::{IconStyle, render_icon};
 use crate::lifecycle::{self, CurrentUserRegistry, OutsideChange};
 use crate::notify::{self, Toasts};
@@ -159,7 +159,13 @@ fn update_tray(ui: &mut Ui, view: &TrayView) {
             (Some(id), Some(spec)) => ui
                 .badges
                 .entry(id)
-                .or_insert_with(|| resolve_badge(id, spec.svg, ui.badges_dir.as_deref()).svg)
+                .or_insert_with(|| {
+                    let chosen = resolve_badge(id, spec.svg, ui.badges_dir.as_deref());
+                    match chosen.origin {
+                        BadgeOrigin::Shipped => with_default_fill(&chosen.svg, spec.color),
+                        BadgeOrigin::Override => chosen.svg,
+                    }
+                })
                 .clone(),
             _ => String::new(),
         };

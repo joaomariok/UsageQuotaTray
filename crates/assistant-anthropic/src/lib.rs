@@ -34,8 +34,8 @@ pub const USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 pub const OAUTH_BETA: &str = "oauth-2025-04-20";
 /// The Claude usage settings page.
 pub const USAGE_PAGE: &str = "https://claude.ai/settings/usage";
-/// The Badge. `badge.svg` is a placeholder until the Claude logo SVG is supplied;
-/// swapping in the logo, unaltered, means replacing that one file.
+/// The Badge: the Claude logo, unaltered. It has no fill of its own, so the tray
+/// draws it in the Badge color.
 pub const BADGE_SVG: &str = include_str!("../badge.svg");
 
 /// Meter keys.

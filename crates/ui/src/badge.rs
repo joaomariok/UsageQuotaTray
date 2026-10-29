@@ -1,9 +1,10 @@
 //! Badge rules for SVGs shipped in the repo, and the user's local override.
 //!
 //! Shipped Badges must have a square viewBox and contain only filled paths: no text,
-//! strokes, gradients, filters, images or external references. A user may drop their
-//! own `<assistant id>.svg` in the app-data badges folder; it keeps its own colors and
-//! only has to render.
+//! strokes, gradients, filters, images or external references. `title` and `desc`
+//! are allowed because they draw nothing. Paths without a fill take the Badge color.
+//! A user may drop their own `<assistant id>.svg` in the app-data badges folder; it
+//! keeps its own colors and only has to render.
 
 use std::path::Path;
 
@@ -19,7 +20,28 @@ pub enum BadgeRuleError {
     FillNotSolid,
 }
 
-const ALLOWED_ELEMENTS: &[&str] = &["svg", "g", "path"];
+const ALLOWED_ELEMENTS: &[&str] = &["svg", "g", "path", "title", "desc"];
+
+/// Gives `svg` a root `fill` of `color` when some path has no fill of its own or
+/// inherited, so a monochrome logo shipped unaltered draws in the Badge color
+/// instead of black. Anything else is returned unchanged.
+pub fn with_default_fill(svg: &str, color: &str) -> String {
+    let Ok(doc) = roxmltree::Document::parse(svg) else {
+        return svg.to_string();
+    };
+    let root = doc.root_element();
+    let unfilled = root
+        .descendants()
+        .filter(|n| n.has_tag_name("path"))
+        .any(|p| !p.ancestors().any(|a| a.attribute("fill").is_some()));
+    let name = root.tag_name().name();
+    let start = root.range().start + 1;
+    if !unfilled || svg.get(start..start + name.len()) != Some(name) {
+        return svg.to_string();
+    }
+    let at = start + name.len();
+    format!("{} fill=\"{color}\"{}", &svg[..at], &svg[at..])
+}
 
 /// Checks a shipped Badge against the rules, listing every violation.
 pub fn validate_badge_svg(svg: &str) -> Result<(), Vec<BadgeRuleError>> {

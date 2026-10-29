@@ -6,7 +6,7 @@ The first Assistant is Claude Code. The core is Assistant-neutral, so other Assi
 
 It runs as one per-user process: no service, no admin rights, no installer, no .NET or WebView2. Built in Rust with Slint's software renderer. See [ADR-0001](docs/adr/0001-per-user-tray-process-not-windows-service.md) and [ADR-0002](docs/adr/0002-rust-and-slint-software-renderer.md). Vocabulary is in [GLOSSARY.md](GLOSSARY.md).
 
-> **Not affiliated with Anthropic.** UsageQuotaTray is an independent project. "Claude" and "Anthropic" belong to their owners. The Claude Code Badge is a placeholder (a plain orange "C") until the Claude logo is added; this is still pending.
+> **Not affiliated with Anthropic.** UsageQuotaTray is an independent project. "Claude" and "Anthropic" belong to their owners. The Claude Code Badge is the Claude logo, shown unaltered to identify the Assistant.
 
 ## Privacy and security
 

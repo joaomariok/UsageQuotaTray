@@ -2,7 +2,10 @@
 
 use std::fs;
 
-use uqt_ui::badge::{BadgeOrigin, BadgeRuleError, resolve_badge, validate_badge_svg};
+use uqt_ui::badge::{
+    BadgeOrigin, BadgeRuleError, resolve_badge, validate_badge_svg, with_default_fill,
+};
+use uqt_ui::icon::{IconStyle, render_rgba};
 
 const GOOD: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><g><path fill="#2BA3A0" d="M2 2h20v20H2z"/></g></svg>"##;
 
@@ -99,6 +102,33 @@ fn an_unreadable_override_falls_back_to_the_shipped_badge() {
     fs::write(dir.path().join("fake.svg"), "not svg at all").unwrap();
     let chosen = resolve_badge("fake", GOOD, Some(dir.path()));
     assert_eq!(chosen.origin, BadgeOrigin::Shipped);
+}
+
+#[test]
+fn accepts_title_and_desc_metadata() {
+    let svg = r#"<svg role="img" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><title>Logo</title><desc>A logo</desc><path d="M2 2h20v20H2z"/></svg>"#;
+    assert_eq!(validate_badge_svg(svg), Ok(()));
+}
+
+#[test]
+fn a_badge_without_a_fill_is_painted_in_the_badge_color() {
+    let svg = r#"<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M0 0h24v24H0z"/></svg>"#;
+    let size = 32;
+    let rgba = render_rgba(
+        size,
+        &[],
+        &with_default_fill(svg, "#D97757"),
+        IconStyle::DarkTaskbar,
+    );
+    let i = ((size / 2 * size + size / 2) * 4) as usize;
+    assert_eq!(&rgba[i..i + 4], &[0xD9, 0x77, 0x57, 0xFF]);
+}
+
+#[test]
+fn a_badge_with_its_own_fill_keeps_it() {
+    assert_eq!(with_default_fill(GOOD, "#D97757"), GOOD);
+    let root_fill = r##"<svg fill="#123456" viewBox="0 0 24 24"><path d="M0 0h1v1z"/></svg>"##;
+    assert_eq!(with_default_fill(root_fill, "#D97757"), root_fill);
 }
 
 #[test]
