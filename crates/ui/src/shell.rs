@@ -13,6 +13,7 @@ use slint::{ComponentHandle, ModelRc, PhysicalPosition, Timer, TimerMode, VecMod
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use uqt_core::engine::{Alert, Catalog, Engine, EngineState, RefreshReason};
+use uqt_core::push::PushServer;
 use uqt_core::runner::{EngineHandle, EngineThread, Update};
 use uqt_core::settings::{Settings, SettingsEdit, SettingsStore};
 use uqt_core::time::Clock;
@@ -22,7 +23,7 @@ use crate::badge::resolve_badge;
 use crate::icon::{IconStyle, app_icon_png, render_icon};
 use crate::lifecycle::{self, Autostart, CurrentUserRegistry};
 use crate::notify::{self, Toasts};
-use crate::present::{self, Moment, PopupView, Ring, SettingsView, Tone, TrayView};
+use crate::present::{self, ActionRequest, Moment, PopupView, Ring, SettingsView, Tone, TrayView};
 use crate::{Popup, RowData, platform, session, settings_window};
 
 const POPUP_WIDTH: f32 = 360.0;
@@ -51,6 +52,8 @@ pub struct ShellOptions {
     /// Register the notification identity and show toasts. Off for measurement runs,
     /// which must not write to the registry.
     pub notifications: bool,
+    /// The push channel's pipe name; `None` starts no push channel.
+    pub push_pipe: Option<String>,
 }
 
 struct Ui {
@@ -299,6 +302,24 @@ fn on_update(update: Update) {
         raise(alert);
     }
     settings_window::refresh();
+    for outcome in &update.outcomes {
+        let owner = settings_window::hwnd();
+        match &outcome.result {
+            Ok(text) => platform::show_info(owner, "UsageQuotaTray", text),
+            Err(text) => platform::show_error(owner, "UsageQuotaTray", text),
+        }
+    }
+}
+
+/// A settings button: asks first when the module wants that, then runs the action on
+/// the scheduler thread; its outcome comes back with the next update.
+pub(crate) fn run_action(request: ActionRequest) {
+    if let Some(question) = &request.confirm
+        && !platform::confirm(settings_window::hwnd(), "UsageQuotaTray", question)
+    {
+        return;
+    }
+    with_ui(|ui| ui.engine.run_action(request.assistant, request.key));
 }
 
 /// Shows an alert as a toast, or as a tray balloon when the toast fails.
@@ -475,6 +496,17 @@ pub fn run(engine: Engine, clock: Arc<dyn Clock>, options: ShellOptions) -> Resu
     });
     let handle = engine_thread.handle();
     session::spawn_presence_monitor(handle.clone());
+    // Kept until the event loop ends; dropping it stops the listener.
+    let _push = options.push_pipe.as_deref().and_then(|pipe| {
+        let engine = handle.clone();
+        match PushServer::spawn(pipe, move |m| engine.push(m)) {
+            Ok(server) => Some(server),
+            Err(e) => {
+                log::warn!("push channel not started: {e}");
+                None
+            }
+        }
+    });
 
     UI.with(|u| {
         *u.borrow_mut() = Some(Ui {

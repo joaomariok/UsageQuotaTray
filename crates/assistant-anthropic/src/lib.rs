@@ -5,6 +5,7 @@
 //! view uses, through Core's host client. The access token only ever goes into the
 //! request's Authorization header; it is never logged, stored or shown.
 
+pub mod statusline;
 mod usage;
 
 use std::ffi::OsString;
@@ -12,7 +13,10 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde_json::Value;
-use uqt_core::contract::{Assistant, FetchContext, FetchError, FetchOutput, Intervals, Source};
+use statusline::installer::Installer;
+use uqt_core::contract::{
+    Assistant, FetchContext, FetchError, FetchOutput, Intervals, SettingField, Source,
+};
 use uqt_core::engine::minutes;
 use uqt_core::http::HttpError;
 use uqt_core::model::{AccountInfo, BadgeSpec, Exactness, MeterKey};
@@ -38,6 +42,8 @@ pub mod keys {
 /// Source ids.
 pub mod sources {
     pub const USAGE: &str = "claude-usage";
+    /// Pushed by the statusline helper after every Claude Code response.
+    pub const STATUSLINE: &str = "claude-statusline";
 }
 
 const CREDENTIALS_FILE: &str = ".credentials.json";
@@ -85,13 +91,26 @@ impl ConfigFolder {
     }
 }
 
+/// The settings key of the statusline install/uninstall button.
+pub const STATUSLINE_FIELD: &str = "statusline";
+
 pub struct ClaudeCodeAssistant {
     folders: Vec<ConfigFolder>,
+    statusline: Option<Installer>,
 }
 
 impl ClaudeCodeAssistant {
     pub fn new(folders: Vec<ConfigFolder>) -> Self {
-        Self { folders }
+        Self {
+            folders,
+            statusline: None,
+        }
+    }
+
+    /// Offers installing the statusline helper in settings, with these files.
+    pub fn with_statusline(mut self, installer: Installer) -> Self {
+        self.statusline = Some(installer);
+        self
     }
 
     /// The default config folder of this process.
@@ -137,6 +156,21 @@ impl Assistant for ClaudeCodeAssistant {
         Some(USAGE_PAGE)
     }
 
+    fn settings_fields(&self) -> Vec<SettingField> {
+        self.statusline
+            .as_ref()
+            .map(statusline::settings_field)
+            .into_iter()
+            .collect()
+    }
+
+    fn run_action(&mut self, key: &str) -> Result<String, String> {
+        match (&self.statusline, key) {
+            (Some(installer), STATUSLINE_FIELD) => statusline::toggle(installer),
+            _ => Err(format!("Claude Code has no action {key}")),
+        }
+    }
+
     /// One Account per config folder, even when Claude Code is missing or logged out,
     /// so that state is shown instead of nothing.
     fn discover_accounts(&mut self) -> Vec<AccountInfo> {
@@ -148,14 +182,17 @@ impl Assistant for ClaudeCodeAssistant {
     }
 
     fn sources(&mut self, account: &AccountInfo) -> Vec<Box<dyn Source>> {
-        self.folder_of(account)
-            .map(|folder| {
-                Box::new(UsageSource {
-                    folder: folder.clone(),
-                }) as Box<dyn Source>
-            })
-            .into_iter()
-            .collect()
+        let Some(folder) = self.folder_of(account) else {
+            return Vec::new();
+        };
+        vec![
+            Box::new(UsageSource {
+                folder: folder.clone(),
+            }),
+            Box::new(statusline::StatuslineSource {
+                folder: folder.clone(),
+            }),
+        ]
     }
 }
 

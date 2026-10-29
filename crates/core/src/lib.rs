@@ -6,6 +6,7 @@ pub mod engine;
 pub mod http;
 pub mod logging;
 pub mod model;
+pub mod push;
 pub mod redact;
 pub mod runner;
 pub mod settings;

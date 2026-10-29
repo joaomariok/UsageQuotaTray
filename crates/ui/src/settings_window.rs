@@ -36,6 +36,7 @@ fn row_data(r: &SettingRow) -> SettingRowData {
             RowKind::Toggle => 3,
             RowKind::Text => 4,
             RowKind::Note => 5,
+            RowKind::Action => 6,
         },
         label: r.label.as_str().into(),
         detail: r.detail.as_str().into(),
@@ -181,6 +182,19 @@ fn wire(window: &SettingsWindow) {
         match row_edit(i, Input::Text(text.into())) {
             Some(edit) => shell::apply_edit(edit),
             None => refresh(),
+        }
+    });
+    window.on_row_clicked(|i| {
+        let request = OPEN.with(|o| {
+            o.borrow()
+                .as_ref()?
+                .view
+                .rows
+                .get(usize::try_from(i).ok()?)?
+                .action()
+        });
+        if let Some(request) = request {
+            shell::run_action(request);
         }
     });
     window.on_poll_selected(|i| {

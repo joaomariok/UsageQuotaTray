@@ -9,7 +9,8 @@ publish.workspace = true
 [dependencies]
 uqt-core.workspace = true
 log.workspace = true
-serde_json.workspace = true
+# preserve_order: the installer keeps Claude Code's settings keys in their order.
+serde_json = { workspace = true, features = ["preserve_order"] }
 
 [dev-dependencies]
 tempfile.workspace = true

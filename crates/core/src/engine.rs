@@ -7,9 +7,10 @@ use std::time::Duration;
 
 use crate::alerts::AlertMemory;
 pub use crate::alerts::{Alert, AlertKind};
-use crate::contract::{Assistant, FetchContext, FetchError, SettingField, Source};
+use crate::contract::{Assistant, FetchContext, FetchError, FetchOutput, SettingField, Source};
 use crate::http::{HostClient, Transport};
 use crate::model::{AccountInfo, BadgeSpec, Exactness, MeterKey, Notice, Reading, Unit, Window};
+use crate::push::PushMessage;
 use crate::settings::Settings;
 use crate::time::{Clock, Timestamp};
 
@@ -175,7 +176,7 @@ impl SourceRun {
     }
 
     fn due_at(&self, pacing: Pacing) -> Option<Timestamp> {
-        if pacing.presence == Presence::Paused {
+        if pacing.presence == Presence::Paused || self.source.push_only() {
             return None;
         }
         let Some(last) = self.last_attempt else {
@@ -255,6 +256,16 @@ pub struct Engine {
     last_forced: Option<Timestamp>,
     settings: Settings,
     pending_alerts: Vec<Alert>,
+    pending_outcomes: Vec<ActionOutcome>,
+}
+
+/// What came of one settings action.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ActionOutcome {
+    pub assistant_id: String,
+    pub key: String,
+    /// The module's message for the user.
+    pub result: Result<String, String>,
 }
 
 impl Engine {
@@ -321,7 +332,33 @@ impl Engine {
             last_forced: None,
             settings: settings.clone(),
             pending_alerts: Vec::new(),
+            pending_outcomes: Vec::new(),
         }
+    }
+
+    /// Runs a module's settings action; the outcome waits in [`Engine::take_outcomes`].
+    pub fn run_action(&mut self, assistant: &str, key: &str) {
+        let result = match self
+            .assistants
+            .iter_mut()
+            .find(|a| a.module.id() == assistant)
+        {
+            Some(a) => a.module.run_action(key),
+            None => Err(format!("no Assistant {assistant}")),
+        };
+        if let Err(e) = &result {
+            log::warn!("action {assistant}/{key} failed: {e}");
+        }
+        self.pending_outcomes.push(ActionOutcome {
+            assistant_id: assistant.to_string(),
+            key: key.to_string(),
+            result,
+        });
+    }
+
+    /// Outcomes of actions run since the last call, oldest first.
+    pub fn take_outcomes(&mut self) -> Vec<ActionOutcome> {
+        std::mem::take(&mut self.pending_outcomes)
     }
 
     /// Alerts raised by ticks since the last call, oldest first.
@@ -488,23 +525,7 @@ impl Engine {
                             run.failures = 0;
                             run.retry_at = None;
                             run.problem = None;
-                            run.notices = output.notices;
-                            let source_id = run.source.id().to_string();
-                            for value in output.values {
-                                if !account.order.contains(&value.key) {
-                                    account.order.push(value.key.clone());
-                                }
-                                account.readings.retain(|r| {
-                                    !(r.source_id == source_id && r.value.key == value.key)
-                                });
-                                account.readings.push(Reading {
-                                    value,
-                                    source_id: source_id.clone(),
-                                    source_name: run.source.display_name().to_string(),
-                                    exactness: run.source.exactness(),
-                                    fetched_at: now,
-                                });
-                            }
+                            record(&mut account.readings, &mut account.order, run, output, now);
                         }
                         Err(error) => {
                             run.failures += 1;
@@ -529,6 +550,38 @@ impl Engine {
         }
         self.evaluate_alerts(now);
         attempted
+    }
+
+    /// Hands a message from the push channel to the matching push Sources of every
+    /// running Account. Returns whether one accepted it.
+    pub fn push(&mut self, message: &PushMessage) -> bool {
+        let now = self.clock.now();
+        let settings = &self.settings;
+        let mut accepted = false;
+        for assistant in &mut self.assistants {
+            let id = assistant.module.id();
+            if id != message.assistant || !settings.assistant_enabled(id) {
+                continue;
+            }
+            for account in &mut assistant.accounts {
+                if !settings.account_enabled(id, &account.info.id) {
+                    continue;
+                }
+                for run in &mut account.sources {
+                    if run.source.id() != message.source {
+                        continue;
+                    }
+                    if let Some(output) = run.source.accept_push(message) {
+                        accepted = true;
+                        record(&mut account.readings, &mut account.order, run, output, now);
+                    }
+                }
+            }
+        }
+        if accepted {
+            self.evaluate_alerts(now);
+        }
+        accepted
     }
 
     /// The published state at the clock's current time.
@@ -567,6 +620,31 @@ impl Engine {
             .iter_mut()
             .flat_map(|a| &mut a.accounts)
             .flat_map(|acc| &mut acc.sources)
+    }
+}
+
+/// Keeps a Source's new values as its newest Readings and its notices as current.
+fn record(
+    readings: &mut Vec<Reading>,
+    order: &mut Vec<MeterKey>,
+    run: &mut SourceRun,
+    output: FetchOutput,
+    now: Timestamp,
+) {
+    run.notices = output.notices;
+    let source_id = run.source.id().to_string();
+    for value in output.values {
+        if !order.contains(&value.key) {
+            order.push(value.key.clone());
+        }
+        readings.retain(|r| !(r.source_id == source_id && r.value.key == value.key));
+        readings.push(Reading {
+            value,
+            source_id: source_id.clone(),
+            source_name: run.source.display_name().to_string(),
+            exactness: run.source.exactness(),
+            fetched_at: now,
+        });
     }
 }
 
