@@ -28,6 +28,11 @@ component Caption inherits Text {
     opacity: 0.7;
     font-size: 12px;
     wrap: word-wrap;
+    // Slint 1.18 measures wrapped text in `for`/`if` rows at its one-line width, so
+    // the Assistants page came out short and its last rows could not be scrolled to.
+    // Pinning the minimum to the height at the real width works around it
+    // (slint-ui/slint#13655).
+    min-height: self.preferred-height;
 }
 
 export component SettingsWindow inherits Window {
@@ -53,13 +58,14 @@ export component SettingsWindow inherits Window {
     title: "UsageQuotaTray settings";
     preferred-width: 600px;
     preferred-height: 580px;
-    min-width: 460px;
+    // Wide enough for the widest Assistants row, which cannot shrink below its labels.
+    min-width: max(460px, nav.width + assistant-rows.min-width);
     min-height: 380px;
     background: Palette.background;
     default-font-family: "Segoe UI Variable Text";
 
     HorizontalLayout {
-        NavList {
+        nav := NavList {
             items: ["Assistants", "Alerts", "About"];
             current-index <=> root.page;
         }
@@ -69,7 +75,7 @@ export component SettingsWindow inherits Window {
             index: 0;
             current: root.page;
             ScrollView {
-                VerticalLayout {
+                assistant-rows := VerticalLayout {
                     padding: 16px;
                     spacing: 6px;
                     alignment: start;
@@ -160,6 +166,7 @@ export component SettingsWindow inherits Window {
                                     vertical-alignment: center;
                                     horizontal-stretch: 1;
                                     wrap: word-wrap;
+                                    min-height: self.preferred-height;
                                 }
                                 Switch {
                                     checked: row.checked;
@@ -202,6 +209,7 @@ export component SettingsWindow inherits Window {
                                     vertical-alignment: center;
                                     horizontal-stretch: 1;
                                     wrap: word-wrap;
+                                    min-height: self.preferred-height;
                                 }
                                 Button {
                                     text: row.text;
