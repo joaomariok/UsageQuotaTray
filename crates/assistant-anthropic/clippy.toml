@@ -1,0 +1,7 @@
+# Assistant crates reach the network only through Core's host client, which enforces the
+# module's allowed hosts. Direct sockets would bypass it, so the types are banned here.
+disallowed-types = [
+    { path = "std::net::TcpStream", reason = "use the HostClient in FetchContext" },
+    { path = "std::net::TcpListener", reason = "Assistant modules do not listen" },
+    { path = "std::net::UdpSocket", reason = "use the HostClient in FetchContext" },
+]

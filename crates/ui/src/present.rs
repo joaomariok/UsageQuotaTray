@@ -2,7 +2,9 @@
 //! No Slint and no Win32 here, so all of it is tested directly.
 
 use uqt_core::contract::FetchError;
-use uqt_core::engine::{AccountState, EngineState, Freshness, MeterState, Pace};
+use uqt_core::engine::{
+    AccountState, AssistantState, EngineState, Freshness, MeterState, Pace, SourceProblem,
+};
 use uqt_core::model::{BadgeSpec, Exactness, Unit};
 use uqt_core::time::Timestamp;
 
@@ -142,7 +144,7 @@ fn tooltip(state: &EngineState, at: Moment) -> String {
             if acc.meters.is_empty()
                 && let Some(p) = &acc.problem
             {
-                lines.push(failure_text(&p.error).to_string());
+                lines.push(problem_line(p));
             }
             for m in &acc.meters {
                 lines.push(tooltip_line(m, at));
@@ -214,6 +216,10 @@ pub fn popup(state: &EngineState, at: Moment) -> PopupView {
                                 failure_text(&p.error),
                                 clock_time(p.since, at)
                             );
+                            if let Some(hint) = &p.hint {
+                                text.push_str("; ");
+                                text.push_str(hint);
+                            }
                             if !acc.meters.is_empty() {
                                 text.push_str("; showing the last good numbers");
                             }
@@ -286,8 +292,34 @@ fn meter_row(m: &MeterState, at: Moment) -> MeterRow {
     }
 }
 
+/// The generic failure text plus the module's hint, for the tooltip.
+fn problem_line(p: &SourceProblem) -> String {
+    match &p.hint {
+        Some(hint) => format!("{}: {hint}", failure_text(&p.error)),
+        None => failure_text(&p.error),
+    }
+}
+
+/// The usage page "Open usage page" opens: that of the Assistant on the icon, else the
+/// first Assistant with one. Only `https://` pages qualify.
+pub fn usage_page(state: &EngineState, at: Moment) -> Option<String> {
+    let page = |a: &AssistantState| {
+        a.usage_page
+            .clone()
+            .filter(|p| p.to_ascii_lowercase().starts_with("https://"))
+    };
+    let shown = tray(state, at).assistant_id;
+    state
+        .assistants
+        .iter()
+        .filter(|a| Some(a.id) == shown)
+        .find_map(page)
+        .or_else(|| state.assistants.iter().find_map(page))
+}
+
 fn failure_text(error: &FetchError) -> String {
     match error {
+        FetchError::NotInstalled => "not installed".into(),
         FetchError::NotLoggedIn => "not logged in".into(),
         FetchError::Expired => "login expired".into(),
         FetchError::Offline => "offline".into(),

@@ -1,6 +1,12 @@
 [workspace]
 resolver = "3"
-members = ["crates/core", "crates/ui", "crates/assistant-fake", "crates/app"]
+members = [
+    "crates/core",
+    "crates/ui",
+    "crates/assistant-fake",
+    "crates/assistant-anthropic",
+    "crates/app",
+]
 # Phase 0 spikes and prototypes keep their own lockfiles.
 exclude = ["tools"]
 
@@ -14,6 +20,7 @@ publish = false
 uqt-core = { path = "crates/core" }
 uqt-ui = { path = "crates/ui" }
 uqt-assistant-fake = { path = "crates/assistant-fake" }
+uqt-assistant-anthropic = { path = "crates/assistant-anthropic" }
 log = { version = "0.4.29", features = ["std"] }
 serde_json = "1"
 tempfile = "3.27"

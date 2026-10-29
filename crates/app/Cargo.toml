@@ -14,4 +14,5 @@ path = "src/main.rs"
 uqt-core.workspace = true
 uqt-ui.workspace = true
 uqt-assistant-fake.workspace = true
+uqt-assistant-anthropic.workspace = true
 log.workspace = true

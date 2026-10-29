@@ -1,11 +1,14 @@
 //! The composition root: the only crate that names Assistant modules.
 
+use uqt_assistant_anthropic::ClaudeCodeAssistant;
 use uqt_assistant_fake::{FakeAssistant, FakeControl, sources};
 use uqt_core::contract::{Assistant, FetchError};
 
 /// Which modules run, decided at startup.
 #[derive(Clone, Debug, Default)]
 pub struct ModuleOptions {
+    /// On unless `UQT_CLAUDE_CODE=0`.
+    pub claude_code: bool,
     /// On in debug builds, or with `UQT_FAKE_ASSISTANT=1`.
     pub fake_assistant: bool,
     /// Every Fake Source fails with this, to see failure states (`UQT_FAKE_FAIL`).
@@ -15,6 +18,7 @@ pub struct ModuleOptions {
 impl ModuleOptions {
     pub fn from_env() -> Self {
         Self {
+            claude_code: std::env::var("UQT_CLAUDE_CODE").map_or(true, |v| v != "0"),
             fake_assistant: cfg!(debug_assertions)
                 || std::env::var("UQT_FAKE_ASSISTANT").is_ok_and(|v| v == "1"),
             fake_failure: std::env::var("UQT_FAKE_FAIL")
@@ -26,12 +30,18 @@ impl ModuleOptions {
 
 /// Every module compiled in, enabled or not. Register new Assistants here.
 pub fn all_modules() -> Vec<Box<dyn Assistant>> {
-    vec![Box::new(FakeAssistant::new())]
+    vec![
+        Box::new(ClaudeCodeAssistant::from_env()),
+        Box::new(FakeAssistant::new()),
+    ]
 }
 
 /// The modules to run.
 pub fn enabled_modules(options: &ModuleOptions) -> Vec<Box<dyn Assistant>> {
     let mut modules: Vec<Box<dyn Assistant>> = Vec::new();
+    if options.claude_code {
+        modules.push(Box::new(ClaudeCodeAssistant::from_env()));
+    }
     if options.fake_assistant {
         let control = FakeControl::new();
         if let Some(error) = &options.fake_failure {

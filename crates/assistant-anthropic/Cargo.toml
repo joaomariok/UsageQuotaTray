@@ -1,0 +1,15 @@
+[package]
+name = "uqt-assistant-anthropic"
+description = "Claude Code Assistant (Anthropic first-party billing): reads Claude Code's login, calls the usage endpoint"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+uqt-core.workspace = true
+log.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

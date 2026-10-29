@@ -32,6 +32,10 @@ deny = [
     # Core and UI must never depend on an Assistant module; only the app crate
     # (the composition root) may.
     { crate = "uqt-assistant-fake", wrappers = ["uqt-app"] },
+    { crate = "uqt-assistant-anthropic", wrappers = ["uqt-app"] },
+    # Only core may depend on the HTTP crate: modules reach the network through Core's
+    # host client, which enforces each module's allowed hosts.
+    { crate = "ureq", wrappers = ["uqt-core"] },
 ]
 
 [sources]

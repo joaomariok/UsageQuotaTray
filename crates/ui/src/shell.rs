@@ -255,10 +255,13 @@ pub fn run(engine: Engine, clock: Arc<dyn Clock>, options: ShellOptions) -> Resu
 
     let menu = Menu::new();
     let refresh_item = MenuItem::new("Refresh now", true, None);
+    let usage_item = MenuItem::new("Open usage page", true, None);
     let exit_item = MenuItem::new("Exit", true, None);
     menu.append(&refresh_item).map_err(|e| e.to_string())?;
+    menu.append(&usage_item).map_err(|e| e.to_string())?;
     menu.append(&exit_item).map_err(|e| e.to_string())?;
     let (refresh_id, exit_id) = (refresh_item.id().clone(), exit_item.id().clone());
+    let usage_id = usage_item.id().clone();
 
     let tray = TrayIconBuilder::new()
         .with_icon(make_icon(&[], "").ok_or("icon")?)
@@ -337,6 +340,21 @@ pub fn run(engine: Engine, clock: Arc<dyn Clock>, options: ShellOptions) -> Resu
     MenuEvent::set_event_handler(Some(move |e: MenuEvent| {
         if e.id == refresh_id {
             menu_engine.refresh(RefreshReason::Manual);
+        } else if e.id == usage_id {
+            let _ = slint::invoke_from_event_loop(|| {
+                let page = with_ui(|ui| {
+                    let at = Moment {
+                        now: ui.clock.now(),
+                        utc_offset_secs: platform::utc_offset_secs(),
+                    };
+                    present::usage_page(ui.state.as_ref()?, at)
+                })
+                .flatten();
+                match page {
+                    Some(url) => platform::open_url(&url),
+                    None => log::info!("no usage page to open"),
+                }
+            });
         } else if e.id == exit_id {
             let _ = slint::invoke_from_event_loop(|| {
                 let _ = slint::quit_event_loop();

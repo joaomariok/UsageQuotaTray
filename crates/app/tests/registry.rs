@@ -28,6 +28,7 @@ fn module_ids_are_unique() {
 fn the_fake_assistant_runs_only_when_enabled() {
     let ids = |fake| {
         enabled_modules(&ModuleOptions {
+            claude_code: false,
             fake_assistant: fake,
             fake_failure: None,
         })
@@ -50,4 +51,21 @@ fn fake_failures_can_be_simulated_by_name() {
         Some(FetchError::RateLimited { retry_after: None })
     );
     assert_eq!(fake_failure("nonsense"), None);
+}
+
+#[test]
+fn claude_code_is_registered_and_runs_unless_disabled() {
+    assert!(all_modules().iter().any(|m| m.id() == "claude-code"));
+    let ids = |claude_code| {
+        enabled_modules(&ModuleOptions {
+            claude_code,
+            fake_assistant: false,
+            fake_failure: None,
+        })
+        .iter()
+        .map(|m| m.id())
+        .collect::<Vec<_>>()
+    };
+    assert_eq!(ids(true), vec!["claude-code"]);
+    assert!(ids(false).is_empty());
 }

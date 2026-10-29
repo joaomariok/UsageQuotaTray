@@ -144,3 +144,29 @@ pub fn bring_to_front(hwnd: HWND) {
         let _ = SetForegroundWindow(hwnd);
     }
 }
+
+/// Opens an `https://` page in the default browser. Anything else is refused.
+pub fn open_url(url: &str) {
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    if !url.to_ascii_lowercase().starts_with("https://") {
+        log::warn!("refusing to open a non-https page");
+        return;
+    }
+    let wide: Vec<u16> = url.encode_utf16().chain(std::iter::once(0)).collect();
+    // SAFETY: both strings are NUL-terminated and outlive the call.
+    let result = unsafe {
+        ShellExecuteW(
+            None,
+            w!("open"),
+            PCWSTR(wide.as_ptr()),
+            PCWSTR::null(),
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    // Values above 32 mean success.
+    if result.0 as usize <= 32 {
+        log::warn!("could not open the usage page ({})", result.0 as usize);
+    }
+}
