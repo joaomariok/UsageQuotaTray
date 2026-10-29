@@ -463,6 +463,19 @@ fn a_429_honors_retry_after() {
 }
 
 #[test]
+fn a_429_with_a_short_retry_after_still_waits_the_rate_limit_backoff() {
+    let mut h = Harness::logged_in();
+    for _ in 0..3 {
+        h.transport
+            .push_response(status(429, &[("Retry-After", "0")]));
+    }
+    h.transport.push_response(ok(LIMITS_BODY));
+    h.engine.tick();
+    // 5, then 10 and 20 minutes apart, as without Retry-After; never right away.
+    assert_eq!(h.run_for(39 * MIN), vec![5, 15, 35]);
+}
+
+#[test]
 fn a_429_without_retry_after_waits_5_minutes_doubling_up_to_30() {
     let mut h = Harness::logged_in();
     for _ in 0..6 {

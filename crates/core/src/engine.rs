@@ -695,9 +695,14 @@ fn backoff(error: &FetchError, failures: u32) -> (i64, Hold) {
         (start.saturating_mul(factor)).min(BACKOFF_CAP_SECS)
     };
     match error {
+        // A longer Retry-After is honored; a shorter one (even 0) never makes the
+        // retry come sooner than the backoff, since the rate limit is shared.
         FetchError::RateLimited {
             retry_after: Some(d),
-        } => (d.as_secs() as i64, Hold::Hard),
+        } => (
+            (d.as_secs() as i64).max(doubling(RATE_LIMIT_BACKOFF_START_SECS)),
+            Hold::Hard,
+        ),
         FetchError::RateLimited { retry_after: None } => {
             (doubling(RATE_LIMIT_BACKOFF_START_SECS), Hold::Hard)
         }
