@@ -1,0 +1,89 @@
+{
+  // Sandboxed runs keep app data in target/dev-appdata and skip the notification
+  // registration, so they never touch the real %LOCALAPPDATA% or the registry.
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Tray: Fake only (sandboxed)",
+      "type": "cppvsdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/target/debug/usagequotatray.exe",
+      "cwd": "${workspaceFolder}",
+      "preLaunchTask": "build: dev-hooks",
+      "environment": [
+        { "name": "LOCALAPPDATA", "value": "${workspaceFolder}/target/dev-appdata" },
+        { "name": "UQT_CLAUDE_CODE", "value": "0" },
+        { "name": "UQT_NOTIFICATIONS", "value": "off" }
+      ],
+      "console": "internalConsole"
+    },
+    {
+      "name": "Tray: Fake failing (sandboxed)",
+      "type": "cppvsdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/target/debug/usagequotatray.exe",
+      "cwd": "${workspaceFolder}",
+      "preLaunchTask": "build: dev-hooks",
+      "environment": [
+        { "name": "LOCALAPPDATA", "value": "${workspaceFolder}/target/dev-appdata" },
+        { "name": "UQT_CLAUDE_CODE", "value": "0" },
+        { "name": "UQT_NOTIFICATIONS", "value": "off" },
+        { "name": "UQT_FAKE_FAIL", "value": "${input:fakeFailure}" }
+      ],
+      "console": "internalConsole"
+    },
+    {
+      "name": "Tray: open popup or settings on start (sandboxed)",
+      "type": "cppvsdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/target/debug/usagequotatray.exe",
+      "cwd": "${workspaceFolder}",
+      "preLaunchTask": "build: dev-hooks",
+      "environment": [
+        { "name": "LOCALAPPDATA", "value": "${workspaceFolder}/target/dev-appdata" },
+        { "name": "UQT_CLAUDE_CODE", "value": "0" },
+        { "name": "UQT_NOTIFICATIONS", "value": "off" },
+        { "name": "UQT_SHOT", "value": "${input:shot}" }
+      ],
+      "console": "internalConsole"
+    },
+    {
+      "name": "Tray: Claude Code LIVE endpoint (sandboxed app data)",
+      "type": "cppvsdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/target/debug/usagequotatray.exe",
+      "cwd": "${workspaceFolder}",
+      "preLaunchTask": "build: dev-hooks",
+      "environment": [
+        { "name": "LOCALAPPDATA", "value": "${workspaceFolder}/target/dev-appdata" },
+        { "name": "UQT_NOTIFICATIONS", "value": "off" }
+      ],
+      "console": "internalConsole"
+    },
+    {
+      "name": "Tray: as shipped (LIVE endpoint, real app data and registry)",
+      "type": "cppvsdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/target/debug/usagequotatray.exe",
+      "cwd": "${workspaceFolder}",
+      "preLaunchTask": "build: as shipped",
+      "console": "internalConsole"
+    }
+  ],
+  "inputs": [
+    {
+      "id": "fakeFailure",
+      "type": "pickString",
+      "description": "How the Fake Assistant fails",
+      "options": ["offline", "expired", "not-logged-in", "changed", "rate-limited"],
+      "default": "offline"
+    },
+    {
+      "id": "shot",
+      "type": "pickString",
+      "description": "Window to open one second after start",
+      "options": ["popup", "settings"],
+      "default": "popup"
+    }
+  ]
+}

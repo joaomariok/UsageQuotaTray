@@ -1,0 +1,49 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "build: dev-hooks",
+      "detail": "Debug build of the tray and the statusline helper with the UQT_* switches compiled in",
+      "type": "process",
+      "command": "cargo",
+      "args": ["build", "-p", "uqt-app", "--features", "dev-hooks"],
+      "group": "build",
+      "problemMatcher": ["$rustc"]
+    },
+    {
+      "label": "build: as shipped",
+      "detail": "Debug build without dev-hooks; every UQT_* variable is ignored",
+      "type": "process",
+      "command": "cargo",
+      "args": ["build", "-p", "uqt-app"],
+      "group": "build",
+      "problemMatcher": ["$rustc"]
+    },
+    {
+      "label": "statusline: push sample input",
+      "detail": "Pipes a sample Claude Code statusline JSON into the helper, as Claude Code would; start a sandboxed tray first",
+      "type": "process",
+      "command": "pwsh",
+      "args": [
+        "-NoProfile",
+        "-Command",
+        "$env:LOCALAPPDATA = '${workspaceFolder}/target/dev-appdata'; New-Item -ItemType Directory -Force $env:LOCALAPPDATA | Out-Null; $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds(); $json = @{ rate_limits = @{ five_hour = @{ used_percentage = ${input:fiveHourPercent}; resets_at = $now + 7200 }; seven_day = @{ used_percentage = ${input:sevenDayPercent}; resets_at = $now + 259200 } } } | ConvertTo-Json -Depth 4 -Compress; $json | & '${workspaceFolder}/target/debug/uqt-statusline.exe'"
+      ],
+      "dependsOn": "build: dev-hooks",
+      "problemMatcher": []
+    },
+    {
+      "label": "gate",
+      "detail": "fmt check, clippy -D warnings, tests, cargo deny",
+      "type": "shell",
+      "command": "cargo fmt --all --check; if ($?) { cargo clippy --workspace --all-targets -- -D warnings }; if ($?) { cargo test --workspace }; if ($?) { cargo deny check }",
+      "options": { "shell": { "executable": "pwsh", "args": ["-NoProfile", "-Command"] } },
+      "group": "test",
+      "problemMatcher": ["$rustc"]
+    }
+  ],
+  "inputs": [
+    { "id": "fiveHourPercent", "type": "promptString", "description": "5-hour used %", "default": "42" },
+    { "id": "sevenDayPercent", "type": "promptString", "description": "7-day used %", "default": "77" }
+  ]
+}
