@@ -34,6 +34,59 @@ impl Timestamp {
     pub fn plus_secs(self, secs: i64) -> Self {
         Self(self.0 + secs)
     }
+
+    /// Parses an RFC 3339 date-time such as `2026-10-29T14:50:00.247834+00:00`.
+    /// Fractional seconds are dropped; an offset (`Z` or `±HH:MM`) is required.
+    pub fn parse_rfc3339(text: &str) -> Option<Self> {
+        let b = text.as_bytes();
+        if b.len() < 20 || b[4] != b'-' || b[7] != b'-' || !matches!(b[10], b'T' | b't') {
+            return None;
+        }
+        if b[13] != b':' || b[16] != b':' {
+            return None;
+        }
+        let num = |range: std::ops::Range<usize>| -> Option<u32> {
+            let s = text.get(range)?;
+            s.bytes()
+                .all(|c| c.is_ascii_digit())
+                .then(|| s.parse().ok())?
+        };
+        let (year, month, day) = (num(0..4)?, num(5..7)?, num(8..10)?);
+        let (hour, minute, second) = (num(11..13)?, num(14..16)?, num(17..19)?);
+        if !(1..=12).contains(&month) || !(1..=31).contains(&day) || hour > 23 || minute > 59 {
+            return None;
+        }
+        if second > 60 {
+            return None;
+        }
+        let mut rest = &text[19..];
+        if let Some(frac) = rest.strip_prefix('.') {
+            let digits = frac.bytes().take_while(u8::is_ascii_digit).count();
+            if digits == 0 {
+                return None;
+            }
+            rest = &frac[digits..];
+        }
+        let offset = match rest {
+            "Z" | "z" => 0,
+            _ => {
+                let sign = match rest.as_bytes().first()? {
+                    b'+' => 1,
+                    b'-' => -1,
+                    _ => return None,
+                };
+                let o = rest.as_bytes();
+                if o.len() != 6 || o[3] != b':' {
+                    return None;
+                }
+                let h: i64 = rest[1..3].parse().ok()?;
+                let m: i64 = rest[4..6].parse().ok()?;
+                sign * (h * 3600 + m * 60)
+            }
+        };
+        let utc = Self::from_utc(i64::from(year), month, day, hour, minute, second);
+        Some(Self(utc.0 - offset))
+    }
 }
 
 /// A broken-down date and time.
@@ -139,6 +192,35 @@ mod tests {
             (c.year, c.month, c.day, c.hour, c.minute, c.second),
             (1969, 12, 31, 23, 59, 59)
         );
+    }
+
+    #[test]
+    fn parses_rfc3339_with_fractions_and_offsets() {
+        assert_eq!(
+            Timestamp::parse_rfc3339("2026-10-29T14:50:00.247834+00:00"),
+            Some(Timestamp::from_utc(2026, 10, 29, 14, 50, 0))
+        );
+        assert_eq!(
+            Timestamp::parse_rfc3339("2026-11-04T02:00:00Z"),
+            Some(Timestamp::from_utc(2026, 11, 4, 2, 0, 0))
+        );
+        assert_eq!(
+            Timestamp::parse_rfc3339("2026-11-04T05:30:00+03:30"),
+            Some(Timestamp::from_utc(2026, 11, 4, 2, 0, 0))
+        );
+        assert_eq!(
+            Timestamp::parse_rfc3339("2026-11-03T23:00:00-03:00"),
+            Some(Timestamp::from_utc(2026, 11, 4, 2, 0, 0))
+        );
+        for bad in [
+            "",
+            "2026-10-29",
+            "2026-13-01T00:00:00Z",
+            "2026-10-29T14:50:00",
+            "soon",
+        ] {
+            assert_eq!(Timestamp::parse_rfc3339(bad), None, "{bad}");
+        }
     }
 
     #[test]

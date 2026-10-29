@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use uqt_app::{ModuleOptions, enabled_modules};
 use uqt_core::engine::Engine;
-use uqt_core::http::NoNetwork;
+use uqt_core::http::UreqTransport;
 use uqt_core::logging::FileLogger;
 use uqt_core::settings::SettingsStore;
 use uqt_core::time::SystemClock;
@@ -41,8 +41,14 @@ fn main() {
     let settings = store.as_ref().map(|s| s.load()).unwrap_or_default();
 
     let modules = enabled_modules(&ModuleOptions::from_env());
-    // No module needs the network yet; the real transport arrives with the first one.
-    let engine = Engine::with_settings(modules, clock.clone(), Arc::new(NoNetwork), &settings);
+    // Every request goes through each module's host client into this one transport,
+    // on the scheduler thread.
+    let engine = Engine::with_settings(
+        modules,
+        clock.clone(),
+        Arc::new(UreqTransport::new()),
+        &settings,
+    );
     let options = ShellOptions {
         badges_dir: data.as_ref().map(|d| d.join("badges")),
         ready_file: std::env::var_os("UQT_READY_FILE").map(PathBuf::from),

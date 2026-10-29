@@ -10,6 +10,12 @@ publish.workspace = true
 log.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# The only HTTP crate in the workspace (deny.toml lets nothing else depend on it).
+# SChannel with the system certificate store; the Windows static proxy via the registry.
+ureq = { version = "3.5", default-features = false, features = [
+    "native-tls-no-default",
+    "win-system-proxy",
+] }
 
 [dev-dependencies]
 tempfile.workspace = true

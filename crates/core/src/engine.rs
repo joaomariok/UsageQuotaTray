@@ -93,6 +93,8 @@ impl MeterState {
 pub struct SourceProblem {
     pub source_name: String,
     pub error: FetchError,
+    /// The module's advice for this failure, if any.
+    pub hint: Option<String>,
     /// When the current run of failures began.
     pub since: Timestamp,
 }
@@ -516,6 +518,7 @@ impl Engine {
                             let since = run.problem.as_ref().map_or(now, |p| p.since);
                             run.problem = Some(SourceProblem {
                                 source_name: run.source.display_name().to_string(),
+                                hint: run.source.failure_hint(&error),
                                 error,
                                 since,
                             });

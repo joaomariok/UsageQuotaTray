@@ -319,6 +319,7 @@ fn account_problems_and_notices_are_shown() {
     acc.problem = Some(SourceProblem {
         source_name: "Test API".into(),
         error: FetchError::Offline,
+        hint: None,
         since: t(11, 40),
     });
     acc.notices.push(Notice {
@@ -340,6 +341,7 @@ fn every_failure_kind_has_a_message() {
         s.assistants[0].accounts[0].problem = Some(SourceProblem {
             source_name: "X".into(),
             error,
+            hint: None,
             since: t(12, 0),
         });
         present::popup(&s, moment()).sections[0].accounts[0]
@@ -363,5 +365,74 @@ fn every_failure_kind_has_a_message() {
     assert_eq!(
         message(FetchError::Other("boom".into())),
         "X: error (boom) since 13:00"
+    );
+}
+
+#[test]
+fn a_module_hint_tells_the_user_what_to_do() {
+    let mut s = state(Vec::new(), &[]);
+    s.assistants[0].accounts[0].problem = Some(SourceProblem {
+        source_name: "Claude usage".into(),
+        error: FetchError::Expired,
+        hint: Some("run Claude Code once".into()),
+        since: t(12, 0),
+    });
+    assert_eq!(
+        present::popup(&s, moment()).sections[0].accounts[0]
+            .problem
+            .as_deref(),
+        Some("Claude usage: login expired since 13:00; run Claude Code once")
+    );
+    assert!(
+        present::tray(&s, moment())
+            .tooltip
+            .contains("login expired: run Claude Code once")
+    );
+
+    s.assistants[0].accounts[0].problem = Some(SourceProblem {
+        source_name: "Claude usage".into(),
+        error: FetchError::NotInstalled,
+        hint: None,
+        since: t(12, 0),
+    });
+    assert_eq!(
+        present::popup(&s, moment()).sections[0].accounts[0]
+            .problem
+            .as_deref(),
+        Some("Claude usage: not installed since 13:00")
+    );
+}
+
+// ---- Usage page -------------------------------------------------------------------
+
+#[test]
+fn the_usage_page_is_the_one_of_the_assistant_on_the_icon() {
+    let mut s = state(vec![meter("m", 10.0, Some(100.0), Unit::Percent)], &["m"]);
+    assert_eq!(present::usage_page(&s, moment()), None);
+
+    let mut other = s.assistants[0].clone();
+    other.id = "other";
+    other.usage_page = Some("https://other.example/usage".into());
+    other.accounts[0].featured.clear();
+    s.assistants[0].usage_page = Some("https://test.example/usage".into());
+    s.assistants.insert(0, other);
+    // The icon shows "test", the only Account with Featured Meters.
+    assert_eq!(
+        present::usage_page(&s, moment()).as_deref(),
+        Some("https://test.example/usage")
+    );
+
+    // Without an Account on the icon, the first Assistant with a page.
+    s.assistants[1].accounts[0].featured.clear();
+    assert_eq!(
+        present::usage_page(&s, moment()).as_deref(),
+        Some("https://other.example/usage")
+    );
+
+    // Only https pages are ever opened.
+    s.assistants[0].usage_page = Some("file:///C:/Windows/System32/calc.exe".into());
+    assert_eq!(
+        present::usage_page(&s, moment()).as_deref(),
+        Some("https://test.example/usage")
     );
 }

@@ -2,12 +2,39 @@
 //! knows the module's allowed hosts; the [`Transport`] behind it does the actual I/O.
 
 use std::sync::Arc;
+use std::time::Duration;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Header names whose values are credentials; never shown by `Debug`.
+const SECRET_HEADERS: [&str; 4] = [
+    "authorization",
+    "proxy-authorization",
+    "cookie",
+    "x-api-key",
+];
+
+#[derive(Clone, PartialEq, Eq)]
 pub struct HttpRequest {
     pub method: String,
     pub url: String,
     pub headers: Vec<(String, String)>,
+}
+
+impl std::fmt::Debug for HttpRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let headers: Vec<(&str, &str)> = self
+            .headers
+            .iter()
+            .map(|(k, v)| {
+                let secret = SECRET_HEADERS.contains(&k.to_ascii_lowercase().as_str());
+                (k.as_str(), if secret { "<redacted>" } else { v.as_str() })
+            })
+            .collect();
+        f.debug_struct("HttpRequest")
+            .field("method", &self.method)
+            .field("url", &self.url)
+            .field("headers", &headers)
+            .finish()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -15,6 +42,16 @@ pub struct HttpResponse {
     pub status: u16,
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
+}
+
+impl HttpResponse {
+    /// The first value of header `name`, compared case-insensitively.
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(name))
+            .map(|(_, v)| v.as_str())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -37,6 +74,91 @@ pub struct NoNetwork;
 impl Transport for NoNetwork {
     fn execute(&self, _request: &HttpRequest) -> Result<HttpResponse, HttpError> {
         Err(HttpError::Transport("networking is not available".into()))
+    }
+}
+
+/// The real transport: blocking ureq on the calling (scheduler) thread, TLS through
+/// Windows SChannel with the system certificate store, so corporate roots work.
+/// Redirects are returned, never followed, so a redirect cannot leave the allowlist.
+pub struct UreqTransport {
+    agent: ureq::Agent,
+}
+
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const BODY_LIMIT: u64 = 1024 * 1024;
+
+impl UreqTransport {
+    /// Uses the proxy from `HTTPS_PROXY`/`ALL_PROXY`, else the Windows (WinINet) static
+    /// proxy of the current user. PAC scripts and auto-detection are not supported.
+    pub fn new() -> Self {
+        Self::with_proxy(ureq::Proxy::try_from_env())
+    }
+
+    /// Connects directly, ignoring any proxy setting.
+    pub fn without_proxy() -> Self {
+        Self::with_proxy(None)
+    }
+
+    fn with_proxy(proxy: Option<ureq::Proxy>) -> Self {
+        use ureq::tls::{RootCerts, TlsConfig, TlsProvider};
+        if let Some(p) = &proxy {
+            log::info!("using proxy {}:{}", p.host(), p.port());
+        }
+        let tls = TlsConfig::builder()
+            .provider(TlsProvider::NativeTls)
+            .root_certs(RootCerts::PlatformVerifier)
+            .build();
+        let agent = ureq::Agent::config_builder()
+            .tls_config(tls)
+            .proxy(proxy)
+            .http_status_as_error(false)
+            .max_redirects(0)
+            .timeout_global(Some(REQUEST_TIMEOUT))
+            .user_agent(concat!("UsageQuotaTray/", env!("CARGO_PKG_VERSION")))
+            .build()
+            .into();
+        Self { agent }
+    }
+}
+
+impl Default for UreqTransport {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Transport for UreqTransport {
+    fn execute(&self, request: &HttpRequest) -> Result<HttpResponse, HttpError> {
+        if request.method != "GET" {
+            return Err(HttpError::Transport(format!(
+                "method {} is not supported",
+                request.method
+            )));
+        }
+        let mut builder = self.agent.get(&request.url);
+        for (name, value) in &request.headers {
+            builder = builder.header(name, value);
+        }
+        // ureq's error text names the host and the failure, never header values.
+        let mut response = builder
+            .call()
+            .map_err(|e| HttpError::Transport(e.to_string()))?;
+        let headers = response
+            .headers()
+            .iter()
+            .filter_map(|(k, v)| Some((k.as_str().to_string(), v.to_str().ok()?.to_string())))
+            .collect();
+        let body = response
+            .body_mut()
+            .with_config()
+            .limit(BODY_LIMIT)
+            .read_to_vec()
+            .map_err(|e| HttpError::Transport(e.to_string()))?;
+        Ok(HttpResponse {
+            status: response.status().as_u16(),
+            headers,
+            body,
+        })
     }
 }
 

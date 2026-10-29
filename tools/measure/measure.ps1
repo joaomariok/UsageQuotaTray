@@ -11,7 +11,8 @@ param(
     [Parameter(Mandatory)][string]$Exe,
     [string]$Name = 'usagequotatray',
     [int]$Seconds = 20,
-    [switch]$Churn
+    [switch]$Churn,
+    [switch]$WithClaudeCode
 )
 $ErrorActionPreference = 'Stop'
 $Exe = (Resolve-Path $Exe).Path
@@ -52,6 +53,12 @@ $ready = Join-Path $sandbox 'ready.txt'
 $saved = @{ LOCALAPPDATA = $env:LOCALAPPDATA }
 $env:LOCALAPPDATA = $sandbox
 $env:UQT_FAKE_ASSISTANT = '1'
+# Never read the real Claude Code login or call the usage endpoint: by default the Claude
+# Code Assistant is off; -WithClaudeCode loads it against an empty throwaway config folder
+# ("not installed"), so it is measured without any network request.
+$savedClaude = $env:CLAUDE_CONFIG_DIR
+$env:CLAUDE_CONFIG_DIR = Join-Path $sandbox 'claude-config-missing'
+if ($WithClaudeCode) { Remove-Item Env:UQT_CLAUDE_CODE -ErrorAction SilentlyContinue } else { $env:UQT_CLAUDE_CODE = '0' }
 $env:UQT_READY_FILE = $ready
 $env:UQT_NOTIFICATIONS = 'off'
 if ($Churn) { $env:UQT_ICON_CHURN = '1' } else { Remove-Item Env:UQT_ICON_CHURN -ErrorAction SilentlyContinue }
@@ -93,7 +100,8 @@ try {
     }
 } finally {
     Get-Tree $root.Id | Stop-Process -Force -ErrorAction SilentlyContinue
-    Remove-Item Env:UQT_READY_FILE, Env:UQT_ICON_CHURN, Env:UQT_FAKE_ASSISTANT, Env:UQT_NOTIFICATIONS -ErrorAction SilentlyContinue
+    Remove-Item Env:UQT_READY_FILE, Env:UQT_ICON_CHURN, Env:UQT_FAKE_ASSISTANT, Env:UQT_CLAUDE_CODE, Env:UQT_NOTIFICATIONS -ErrorAction SilentlyContinue
+    if ($null -eq $savedClaude) { Remove-Item Env:CLAUDE_CONFIG_DIR -ErrorAction SilentlyContinue } else { $env:CLAUDE_CONFIG_DIR = $savedClaude }
     Start-Sleep -Milliseconds 300
     Remove-Item $sandbox -Recurse -Force -ErrorAction SilentlyContinue
 }

@@ -440,11 +440,13 @@ pub fn run(engine: Engine, clock: Arc<dyn Clock>, options: ShellOptions) -> Resu
         .is_some_and(|exe| Autostart::new(&CurrentUserRegistry, exe).is_enabled());
     let menu = Menu::new();
     let refresh_item = MenuItem::new("Refresh now", true, None);
+    let usage_item = MenuItem::new("Open usage page", true, None);
     let settings_item = MenuItem::new("Settings\u{2026}", true, None);
     let autostart_item = CheckMenuItem::new("Start with Windows", true, autostart_on, None);
     let exit_item = MenuItem::new("Exit", true, None);
     for item in [
         &refresh_item as &dyn tray_icon::menu::IsMenuItem,
+        &usage_item,
         &settings_item,
         &autostart_item,
         &PredefinedMenuItem::separator(),
@@ -458,6 +460,7 @@ pub fn run(engine: Engine, clock: Arc<dyn Clock>, options: ShellOptions) -> Resu
         autostart_item.id().clone(),
         exit_item.id().clone(),
     );
+    let usage_id = usage_item.id().clone();
 
     let tray = TrayIconBuilder::new()
         .with_icon(make_icon(&[], "", false).ok_or("icon")?)
@@ -546,6 +549,21 @@ pub fn run(engine: Engine, clock: Arc<dyn Clock>, options: ShellOptions) -> Resu
                 // The menu toggles its own check mark; follow it.
                 let on = with_ui(|ui| ui.autostart_item.is_checked()).unwrap_or(false);
                 set_autostart(on);
+            });
+        } else if e.id == usage_id {
+            let _ = slint::invoke_from_event_loop(|| {
+                let page = with_ui(|ui| {
+                    let at = Moment {
+                        now: ui.clock.now(),
+                        utc_offset_secs: platform::utc_offset_secs(),
+                    };
+                    present::usage_page(ui.state.as_ref()?, at)
+                })
+                .flatten();
+                match page {
+                    Some(url) => platform::open_url(&url),
+                    None => log::info!("no usage page to open"),
+                }
             });
         } else if e.id == exit_id {
             let _ = slint::invoke_from_event_loop(|| {

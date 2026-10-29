@@ -76,6 +76,11 @@ pub trait Source: Send {
         None
     }
     fn fetch(&mut self, ctx: &FetchContext<'_>) -> Result<FetchOutput, FetchError>;
+    /// What the user can do about `error`, in the Assistant's own words
+    /// ("run Claude Code once"); shown next to the generic failure text.
+    fn failure_hint(&self, _error: &FetchError) -> Option<String> {
+        None
+    }
 }
 
 /// What a Source gets for one fetch.
@@ -95,10 +100,14 @@ pub struct FetchOutput {
 /// Why a fetch failed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FetchError {
+    /// The Assistant itself is not installed on this PC.
+    NotInstalled,
     NotLoggedIn,
     Expired,
     Offline,
-    RateLimited { retry_after: Option<Duration> },
+    RateLimited {
+        retry_after: Option<Duration>,
+    },
     EndpointChanged,
     Other(String),
 }
