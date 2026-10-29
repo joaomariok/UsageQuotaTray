@@ -71,6 +71,8 @@ pub struct AccountSection {
     pub problem: Option<String>,
     pub notices: Vec<String>,
     pub meters: Vec<MeterRow>,
+    /// Meters the module could not identify, shown collapsed under "Unrecognized".
+    pub unrecognized: Vec<MeterRow>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -87,6 +89,8 @@ pub struct MeterRow {
     pub exactness: &'static str,
     pub updated: String,
     pub stale: bool,
+    /// The Breakdown ("Claude Code 13% · Chats 4%"), if the Meter has one.
+    pub breakdown: Option<String>,
 }
 
 /// How constrained an Account's Featured Meters are: the highest fresh Used/Limit
@@ -247,7 +251,7 @@ fn tooltip(state: &EngineState, at: Moment) -> String {
             {
                 lines.push(problem_line(p));
             }
-            for m in &acc.meters {
+            for m in acc.meters.iter().filter(|m| !m.unrecognized) {
                 lines.push(tooltip_line(m, at));
             }
         }
@@ -327,7 +331,18 @@ pub fn popup(state: &EngineState, at: Moment) -> PopupView {
                             text
                         }),
                         notices: acc.notices.iter().map(|n| n.text.clone()).collect(),
-                        meters: acc.meters.iter().map(|m| meter_row(m, at)).collect(),
+                        meters: acc
+                            .meters
+                            .iter()
+                            .filter(|m| !m.unrecognized)
+                            .map(|m| meter_row(m, at))
+                            .collect(),
+                        unrecognized: acc
+                            .meters
+                            .iter()
+                            .filter(|m| m.unrecognized)
+                            .map(|m| meter_row(m, at))
+                            .collect(),
                     })
                     .collect(),
             })
@@ -390,6 +405,13 @@ fn meter_row(m: &MeterState, at: Moment) -> MeterRow {
             }
         },
         stale,
+        breakdown: m.breakdown.as_ref().map(|b| {
+            b.parts
+                .iter()
+                .map(|p| format!("{} {}%", p.label, p.percent.round() as i64))
+                .collect::<Vec<_>>()
+                .join(" \u{b7} ")
+        }),
     }
 }
 

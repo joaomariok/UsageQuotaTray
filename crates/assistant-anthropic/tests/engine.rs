@@ -14,7 +14,7 @@ use uqt_assistant_anthropic::{
 use uqt_core::contract::FetchError;
 use uqt_core::engine::{Engine, Freshness, MeterState, Presence, SourceProblem};
 use uqt_core::http::{HttpError, HttpResponse};
-use uqt_core::model::{Exactness, Unit};
+use uqt_core::model::{Breakdown, BreakdownPart, Exactness, Unit};
 use uqt_core::testing::RecordingTransport;
 use uqt_core::time::{FakeClock, Timestamp};
 
@@ -475,4 +475,204 @@ fn a_429_without_retry_after_waits_5_minutes_doubling_up_to_30() {
     );
     // 5, then 10, 20, 30, 30 minutes apart.
     assert_eq!(h.run_for(100 * MIN), vec![5, 15, 35, 65, 95]);
+}
+
+// ---- The recorded Phase 0 response -------------------------------------------------
+
+/// The usage response recorded in Phase 0 (body as recorded, headers excluded).
+const RECORDED: &str = include_str!("fixtures/usage-recorded.json");
+
+fn recorded() -> Harness {
+    let mut h = Harness::logged_in();
+    h.transport.push_response(ok(RECORDED));
+    h.engine.tick();
+    h
+}
+
+#[test]
+fn the_recorded_response_shows_the_model_specific_weekly_limit_by_display_name() {
+    let h = recorded();
+    let fable = h.meter("weekly:fable");
+    assert_eq!(fable.label, "Weekly \u{b7} Fable");
+    assert_eq!(fable.used, 0.0);
+    assert_eq!(fable.limit, Some(100.0));
+    assert_eq!(fable.unit, Unit::Percent);
+    let w = fable.window.expect("model window");
+    assert_eq!(w.end, Timestamp::from_utc(2026, 11, 4, 2, 0, 0));
+    assert_eq!(w.length, Some(Duration::from_secs(7 * 86_400)));
+    assert_eq!(h.meter(keys::SESSION).used, 58.0);
+    assert_eq!(h.meter(keys::WEEKLY).used, 14.0);
+}
+
+#[test]
+fn the_weekly_meter_carries_the_per_surface_breakdown() {
+    let h = recorded();
+    let weekly = h.meter(keys::WEEKLY);
+    let part = |label: &str, percent: f64| BreakdownPart {
+        label: label.into(),
+        percent,
+    };
+    assert_eq!(
+        weekly.breakdown,
+        Some(Breakdown {
+            parts: vec![
+                part("Claude Code", 13.0),
+                part("Chats", 4.0),
+                part("Cowork", 83.0),
+                part("Other", 0.0),
+            ]
+        })
+    );
+    assert_eq!(h.meter(keys::SESSION).breakdown, None);
+}
+
+#[test]
+fn the_recorded_response_shows_usage_credits_in_the_accounts_currency_without_a_window() {
+    let h = recorded();
+    let credits = h.meter(keys::USAGE_CREDITS);
+    assert_eq!(credits.label, "Usage credits");
+    assert_eq!(credits.used, 0.0);
+    assert_eq!(credits.limit, Some(100.0));
+    assert_eq!(credits.unit, Unit::Currency("BRL".into()));
+    assert_eq!(credits.window, None);
+    assert_eq!(credits.pace, None);
+}
+
+#[test]
+fn usage_credits_come_from_the_structured_spend_object_in_minor_units() {
+    let mut h = Harness::logged_in();
+    h.transport.push_response(ok(r#"{
+      "five_hour": {"utilization": 10.0, "resets_at": "2026-10-29T15:00:00Z"},
+      "spend": {"used": {"amount_minor": 1234, "currency": "JPY", "exponent": 0},
+                "limit": {"amount_minor": 5000, "currency": "JPY", "exponent": 0},
+                "percent": 25, "enabled": true},
+      "extra_usage": {"is_enabled": true, "monthly_limit": 1, "used_credits": 1.0,
+                      "currency": "USD", "decimal_places": 2}
+    }"#));
+    h.engine.tick();
+    let credits = h.meter(keys::USAGE_CREDITS);
+    assert_eq!(credits.used, 1234.0);
+    assert_eq!(credits.limit, Some(5000.0));
+    assert_eq!(credits.unit, Unit::Currency("JPY".into()));
+}
+
+#[test]
+fn usage_credits_fall_back_to_extra_usage() {
+    let mut h = Harness::logged_in();
+    h.transport.push_response(ok(r#"{
+      "five_hour": {"utilization": 10.0, "resets_at": "2026-10-29T15:00:00Z"},
+      "extra_usage": {"is_enabled": true, "monthly_limit": 2000, "used_credits": 550.0,
+                      "currency": "USD", "decimal_places": 2}
+    }"#));
+    h.engine.tick();
+    let credits = h.meter(keys::USAGE_CREDITS);
+    assert_eq!(credits.used, 5.5);
+    assert_eq!(credits.limit, Some(20.0));
+    assert_eq!(credits.unit, Unit::Currency("USD".into()));
+    assert_eq!(credits.window, None);
+}
+
+#[test]
+fn no_usage_credits_meter_while_credits_are_disabled() {
+    let mut h = Harness::logged_in();
+    h.transport.push_response(ok(r#"{
+      "five_hour": {"utilization": 10.0, "resets_at": "2026-10-29T15:00:00Z"},
+      "spend": {"used": {"amount_minor": 0, "currency": "USD", "exponent": 2},
+                "limit": null, "enabled": false},
+      "extra_usage": {"is_enabled": false, "monthly_limit": null, "used_credits": null,
+                      "currency": null, "decimal_places": 2}
+    }"#));
+    h.engine.tick();
+    let state = h.engine.state();
+    assert!(
+        state.assistants[0].accounts[0]
+            .meter(keys::USAGE_CREDITS)
+            .is_none()
+    );
+}
+
+// ---- Unrecognized keys -------------------------------------------------------------
+
+#[test]
+fn an_unrecognized_object_with_utilization_and_reset_becomes_a_meter_under_its_raw_key() {
+    let h = recorded();
+    let m = h.meter("unrecognized:iguana_necktie");
+    assert_eq!(m.label, "iguana_necktie");
+    assert!(m.unrecognized);
+    assert_eq!(m.used, 0.0);
+    assert_eq!(m.limit, Some(100.0));
+    assert_eq!(m.unit, Unit::Percent);
+    assert_eq!(
+        m.window.map(|w| w.end),
+        Some(Timestamp::from_utc(2026, 11, 5, 7, 59, 0))
+    );
+    assert!(!h.meter(keys::WEEKLY).unrecognized);
+
+    let state = h.engine.state();
+    let account = &state.assistants[0].accounts[0];
+    assert!(
+        !account
+            .featured
+            .iter()
+            .any(|k| k.starts_with("unrecognized:"))
+    );
+}
+
+#[test]
+fn null_code_named_keys_are_ignored() {
+    let h = recorded();
+    let state = h.engine.state();
+    let mut keys: Vec<&str> = state.assistants[0].accounts[0]
+        .meters
+        .iter()
+        .map(|m| m.key.as_str())
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        vec![
+            "session",
+            "unrecognized:iguana_necktie",
+            "usage-credits",
+            "weekly",
+            "weekly:fable"
+        ]
+    );
+}
+
+#[test]
+fn unrecognized_meters_keep_alerts_on() {
+    let mut h = Harness::logged_in();
+    h.transport.push_response(ok(r#"{
+      "five_hour": {"utilization": 10.0, "resets_at": "2026-10-29T15:00:00Z"},
+      "copper_kite": {"utilization": 91.0, "resets_at": "2026-11-02T00:00:00Z"},
+      "brass_thimble": {"note": "no utilization, no Meter"}
+    }"#));
+    h.engine.tick();
+    let alerted: Vec<String> = h
+        .engine
+        .take_alerts()
+        .into_iter()
+        .map(|a| a.meter_key)
+        .collect();
+    assert!(alerted.contains(&"unrecognized:copper_kite".to_string()));
+    let state = h.engine.state();
+    assert!(
+        state.assistants[0].accounts[0]
+            .meter("unrecognized:brass_thimble")
+            .is_none()
+    );
+}
+
+#[test]
+fn pace_severity_and_is_active_are_logged_raw() {
+    let logs = captured_logs();
+    let _h = recorded();
+    let lines = logs.0.lock().unwrap();
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("pace") && l.contains("severity") && l.contains("is_active")),
+        "{lines:?}"
+    );
 }

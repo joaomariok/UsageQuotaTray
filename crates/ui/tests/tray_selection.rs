@@ -47,6 +47,8 @@ fn meter(key: &str, percent: f64) -> MeterState {
         fetched_at: t(11, 58),
         freshness: Freshness::Fresh,
         pace: Some(Pace::OnPace),
+        breakdown: None,
+        unrecognized: false,
     }
 }
 

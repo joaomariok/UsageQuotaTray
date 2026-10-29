@@ -9,7 +9,9 @@ use crate::alerts::AlertMemory;
 pub use crate::alerts::{Alert, AlertKind};
 use crate::contract::{Assistant, FetchContext, FetchError, SettingField, Source};
 use crate::http::{HostClient, Transport};
-use crate::model::{AccountInfo, BadgeSpec, Exactness, MeterKey, Notice, Reading, Unit, Window};
+use crate::model::{
+    AccountInfo, BadgeSpec, Breakdown, Exactness, MeterKey, Notice, Reading, Unit, Window,
+};
 use crate::settings::Settings;
 use crate::time::{Clock, Timestamp};
 
@@ -79,6 +81,9 @@ pub struct MeterState {
     pub freshness: Freshness,
     /// Only for fresh Meters with a Limit and a Window.
     pub pace: Option<Pace>,
+    pub breakdown: Option<Breakdown>,
+    /// The module could not identify this Meter (shown under its raw key).
+    pub unrecognized: bool,
 }
 
 impl MeterState {
@@ -211,6 +216,50 @@ struct AssistantRun {
 }
 
 impl AssistantRun {
+    /// Asks the module for its Accounts again. Accounts still found keep their
+    /// Readings, schedule and alert memory; new ones start fresh; vanished ones go.
+    fn rediscover(&mut self) {
+        let found = self.module.discover_accounts();
+        let mut old = std::mem::take(&mut self.accounts);
+        for info in found {
+            if self.accounts.iter().any(|a| a.info.id == info.id) {
+                continue;
+            }
+            let run = match old.iter().position(|a| a.info.id == info.id) {
+                Some(i) => {
+                    let mut run = old.swap_remove(i);
+                    run.info = info;
+                    run
+                }
+                None => {
+                    let mut sources: Vec<SourceRun> = self
+                        .module
+                        .sources(&info)
+                        .into_iter()
+                        .map(|source| SourceRun {
+                            source,
+                            last_attempt: None,
+                            retry_at: None,
+                            failures: 0,
+                            problem: None,
+                            forced: None,
+                            notices: Vec::new(),
+                        })
+                        .collect();
+                    sources.sort_by_key(|s| s.source.priority());
+                    AccountRun {
+                        info,
+                        sources,
+                        readings: Vec::new(),
+                        order: Vec::new(),
+                        alerts: HashMap::new(),
+                    }
+                }
+            };
+            self.accounts.push(run);
+        }
+    }
+
     fn enabled(&self, settings: &Settings) -> bool {
         settings.assistant_enabled(self.module.id())
     }
@@ -280,38 +329,13 @@ impl Engine {
             .map(|mut module| {
                 module.configure(&settings.module_values(module.id()));
                 let http = HostClient::new(module.allowed_hosts(), transport.clone());
-                let accounts = module
-                    .discover_accounts()
-                    .into_iter()
-                    .map(|info| {
-                        let mut sources: Vec<SourceRun> = module
-                            .sources(&info)
-                            .into_iter()
-                            .map(|source| SourceRun {
-                                source,
-                                last_attempt: None,
-                                retry_at: None,
-                                failures: 0,
-                                problem: None,
-                                forced: None,
-                                notices: Vec::new(),
-                            })
-                            .collect();
-                        sources.sort_by_key(|s| s.source.priority());
-                        AccountRun {
-                            info,
-                            sources,
-                            readings: Vec::new(),
-                            order: Vec::new(),
-                            alerts: HashMap::new(),
-                        }
-                    })
-                    .collect();
-                AssistantRun {
+                let mut run = AssistantRun {
                     module,
                     http,
-                    accounts,
-                }
+                    accounts: Vec::new(),
+                };
+                run.rediscover();
+                run
             })
             .collect();
         Self {
@@ -370,14 +394,15 @@ impl Engine {
         self.presence
     }
 
-    /// Takes the user's new settings into account from now on. Module values reach the
-    /// modules at once; Accounts are not rediscovered until the next start.
+    /// Takes the user's new settings into account from now on. A module whose values
+    /// changed is reconfigured and its Accounts are discovered again at once.
     pub fn apply_settings(&mut self, settings: &Settings) {
         for a in &mut self.assistants {
             let id = a.module.id();
             let values = settings.module_values(id);
             if values != self.settings.module_values(id) {
                 a.module.configure(&values);
+                a.rediscover();
             }
         }
         self.settings = settings.clone();
@@ -426,8 +451,9 @@ impl Engine {
         self.presence = presence;
     }
 
-    /// Asks for an immediate fetch of every Source. Automatic reasons are debounced to
-    /// once a minute; rate limits are always honored.
+    /// Discovers every module's Accounts again (a login may have changed), then asks
+    /// for an immediate fetch of every Source. Automatic reasons are debounced to once
+    /// a minute; rate limits are always honored.
     pub fn request_refresh(&mut self, reason: RefreshReason) {
         let now = self.clock.now();
         if reason != RefreshReason::Manual
@@ -438,6 +464,9 @@ impl Engine {
             return;
         }
         self.last_forced = Some(now);
+        for a in &mut self.assistants {
+            a.rediscover();
+        }
         for source in self.sources_mut() {
             source.forced = Some((now, reason));
         }
@@ -672,6 +701,8 @@ fn meter_state(r: &Reading, fresh: bool, now: Timestamp) -> MeterState {
         fetched_at: r.fetched_at,
         freshness,
         pace,
+        breakdown: v.breakdown.clone(),
+        unrecognized: v.unrecognized,
     }
 }
 

@@ -32,6 +32,8 @@ fn meter(key: &str, limit: Option<f64>) -> MeterState {
         fetched_at: Timestamp(0),
         freshness: Freshness::Fresh,
         pace: None,
+        breakdown: None,
+        unrecognized: false,
     }
 }
 

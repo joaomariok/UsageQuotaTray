@@ -72,6 +72,8 @@ struct Ui {
     shown_tooltip: String,
     was_foreground: bool,
     auto_hidden_at: Option<Instant>,
+    /// Whether the popup's "Unrecognized" groups are expanded.
+    unrecognized_open: bool,
 }
 
 #[derive(Clone, PartialEq)]
@@ -118,11 +120,11 @@ fn present_now() {
         let view = present::tray(state, at);
         let popup = present::popup(state, at);
         update_tray(ui, &view);
-        Some(popup)
+        Some((popup, ui.unrecognized_open))
     })
     .flatten();
-    if let (Some(view), Some(popup)) = (rows, with_ui(|ui| ui.popup.upgrade()).flatten()) {
-        let (rows, height) = popup_rows(&view);
+    if let (Some((view, open)), Some(popup)) = (rows, with_ui(|ui| ui.popup.upgrade()).flatten()) {
+        let (rows, height) = popup_rows(&view, open);
         popup.set_rows(ModelRc::new(VecModel::from(rows)));
         popup.set_content_height(height);
     }
@@ -164,12 +166,44 @@ fn update_tray(ui: &mut Ui, view: &TrayView) {
 }
 
 /// Flattens the popup view into Slint rows and returns the window's logical height.
-fn popup_rows(view: &PopupView) -> (Vec<RowData>, f32) {
+/// `unrecognized_open` expands the "Unrecognized" groups.
+fn popup_rows(view: &PopupView, unrecognized_open: bool) -> (Vec<RowData>, f32) {
     let mut rows = Vec::new();
     let text_row = |kind: i32, title: &str| RowData {
         kind,
         title: title.into(),
         ..Default::default()
+    };
+    let meter_rows = |rows: &mut Vec<RowData>, meters: &[present::MeterRow]| {
+        for m in meters {
+            let amount = match &m.limit {
+                Some(l) => format!("{} {l}", m.amount),
+                None => m.amount.clone(),
+            };
+            let detail = [m.reset.as_deref(), m.pace.as_deref()]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join(" \u{b7} ");
+            rows.push(RowData {
+                kind: 2,
+                title: m.label.as_str().into(),
+                amount: amount.into(),
+                detail: detail.into(),
+                meta: format!("{} \u{b7} {} \u{b7} {}", m.source, m.exactness, m.updated).into(),
+                fraction: m.fraction.unwrap_or(0.0),
+                has_bar: m.fraction.is_some(),
+                tone: match m.tone {
+                    Tone::Amber => 1,
+                    Tone::Red => 2,
+                    Tone::Green | Tone::Grey => 0,
+                },
+                stale: m.stale,
+            });
+            if let Some(b) = &m.breakdown {
+                rows.push(text_row(3, b));
+            }
+        }
     };
     for section in &view.sections {
         rows.push(text_row(0, &section.title));
@@ -181,32 +215,20 @@ fn popup_rows(view: &PopupView) -> (Vec<RowData>, f32) {
             for n in &acc.notices {
                 rows.push(text_row(3, n));
             }
-            for m in &acc.meters {
-                let amount = match &m.limit {
-                    Some(l) => format!("{} {l}", m.amount),
-                    None => m.amount.clone(),
+            meter_rows(&mut rows, &acc.meters);
+            if !acc.unrecognized.is_empty() {
+                let arrow = if unrecognized_open {
+                    "\u{25be}"
+                } else {
+                    "\u{25b8}"
                 };
-                let detail = [m.reset.as_deref(), m.pace.as_deref()]
-                    .into_iter()
-                    .flatten()
-                    .collect::<Vec<_>>()
-                    .join(" \u{b7} ");
-                rows.push(RowData {
-                    kind: 2,
-                    title: m.label.as_str().into(),
-                    amount: amount.into(),
-                    detail: detail.into(),
-                    meta: format!("{} \u{b7} {} \u{b7} {}", m.source, m.exactness, m.updated)
-                        .into(),
-                    fraction: m.fraction.unwrap_or(0.0),
-                    has_bar: m.fraction.is_some(),
-                    tone: match m.tone {
-                        Tone::Amber => 1,
-                        Tone::Red => 2,
-                        Tone::Green | Tone::Grey => 0,
-                    },
-                    stale: m.stale,
-                });
+                rows.push(text_row(
+                    4,
+                    &format!("{arrow} Unrecognized ({})", acc.unrecognized.len()),
+                ));
+                if unrecognized_open {
+                    meter_rows(&mut rows, &acc.unrecognized);
+                }
             }
         }
     }
@@ -219,6 +241,7 @@ fn popup_rows(view: &PopupView) -> (Vec<RowData>, f32) {
             0 => 32.0,
             1 => 24.0,
             2 => 72.0,
+            4 => 24.0,
             _ => 20.0,
         })
         .sum();
@@ -496,6 +519,7 @@ pub fn run(engine: Engine, clock: Arc<dyn Clock>, options: ShellOptions) -> Resu
             shown_tooltip: String::new(),
             was_foreground: false,
             auto_hidden_at: None,
+            unrecognized_open: false,
         })
     });
 
@@ -505,6 +529,14 @@ pub fn run(engine: Engine, clock: Arc<dyn Clock>, options: ShellOptions) -> Resu
         popup.on_dismiss(move || {
             if let Some(p) = weak.upgrade() {
                 hide_popup(&p);
+            }
+        });
+        let weak = popup.as_weak();
+        popup.on_toggle_unrecognized(move || {
+            with_ui(|ui| ui.unrecognized_open = !ui.unrecognized_open);
+            present_now();
+            if let Some(p) = weak.upgrade() {
+                place(&p);
             }
         });
     }

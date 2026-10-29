@@ -269,6 +269,8 @@ impl Source for FakeSource {
                 start: Some(day_start),
                 length: Some(Duration::from_secs(DAY as u64)),
             }),
+            breakdown: None,
+            unrecognized: false,
         };
 
         let civil = server.civil(0);
@@ -291,6 +293,8 @@ impl Source for FakeSource {
                 start: Some(month_start),
                 length: None,
             }),
+            breakdown: None,
+            unrecognized: false,
         };
 
         let values = [requests, spend]

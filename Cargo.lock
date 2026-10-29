@@ -4756,9 +4756,11 @@ name = "uqt-assistant-anthropic"
 version = "0.1.0"
 dependencies = [
  "log",
+ "serde",
  "serde_json",
  "tempfile",
  "uqt-core",
+ "windows",
 ]
 
 [[package]]

@@ -7,7 +7,7 @@ use uqt_core::contract::FetchError;
 use uqt_core::engine::{
     AccountState, AssistantState, EngineState, Freshness, MeterState, Pace, SourceProblem,
 };
-use uqt_core::model::{BadgeSpec, Exactness, Notice, Unit, Window};
+use uqt_core::model::{BadgeSpec, Breakdown, BreakdownPart, Exactness, Notice, Unit, Window};
 use uqt_core::time::Timestamp;
 use uqt_ui::present::{self, Moment, Tone};
 
@@ -46,6 +46,8 @@ fn meter(key: &str, used: f64, limit: Option<f64>, unit: Unit) -> MeterState {
         fetched_at: t(11, 57),
         freshness: Freshness::Fresh,
         pace: Some(Pace::OnPace),
+        breakdown: None,
+        unrecognized: false,
     }
 }
 
@@ -435,4 +437,64 @@ fn the_usage_page_is_the_one_of_the_assistant_on_the_icon() {
         present::usage_page(&s, moment()).as_deref(),
         Some("https://test.example/usage")
     );
+}
+
+// ---- Breakdown and Unrecognized ---------------------------------------------------
+
+#[test]
+fn a_meter_with_a_breakdown_shows_the_split_in_the_popup() {
+    let mut weekly = meter("weekly", 14.0, Some(100.0), Unit::Percent);
+    let part = |label: &str, percent: f64| BreakdownPart {
+        label: label.into(),
+        percent,
+    };
+    weekly.breakdown = Some(Breakdown {
+        parts: vec![
+            part("Claude Code", 13.0),
+            part("Chats", 4.4),
+            part("Cowork", 82.6),
+        ],
+    });
+    let s = state(
+        vec![weekly, meter("session", 5.0, Some(100.0), Unit::Percent)],
+        &[],
+    );
+    assert_eq!(
+        popup_meter(&s, 0).breakdown.as_deref(),
+        Some("Claude Code 13% \u{b7} Chats 4% \u{b7} Cowork 83%")
+    );
+    assert_eq!(popup_meter(&s, 1).breakdown, None);
+}
+
+#[test]
+fn unrecognized_meters_go_in_their_own_group_and_stay_out_of_the_tooltip() {
+    let mut odd = meter("unrecognized:copper_kite", 30.0, Some(100.0), Unit::Percent);
+    odd.label = "copper_kite".into();
+    odd.unrecognized = true;
+    let s = state(
+        vec![meter("session", 5.0, Some(100.0), Unit::Percent), odd],
+        &["session"],
+    );
+    let account = &present::popup(&s, moment()).sections[0].accounts[0];
+    let labels = |rows: &[present::MeterRow]| -> Vec<String> {
+        rows.iter().map(|r| r.label.clone()).collect()
+    };
+    assert_eq!(labels(&account.meters), vec!["session"]);
+    assert_eq!(labels(&account.unrecognized), vec!["copper_kite"]);
+    assert_eq!(account.unrecognized[0].amount, "30%");
+
+    let tooltip = present::tray(&s, moment()).tooltip;
+    assert!(tooltip.contains("session"), "{tooltip}");
+    assert!(!tooltip.contains("copper_kite"), "{tooltip}");
+}
+
+#[test]
+fn an_unrecognized_meter_at_90_percent_still_shows_the_dot() {
+    let mut odd = meter("unrecognized:copper_kite", 91.0, Some(100.0), Unit::Percent);
+    odd.unrecognized = true;
+    let s = state(
+        vec![meter("session", 5.0, Some(100.0), Unit::Percent), odd],
+        &["session"],
+    );
+    assert!(present::tray(&s, moment()).dot);
 }

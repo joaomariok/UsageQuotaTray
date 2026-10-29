@@ -9,7 +9,14 @@ publish.workspace = true
 [dependencies]
 uqt-core.workspace = true
 log.workspace = true
+serde.workspace = true
 serde_json.workspace = true
+# Existence checks for ANTHROPIC_API_KEY (process environment and registry); no values.
+windows = { version = "0.62.2", features = [
+    "Win32_Foundation",
+    "Win32_System_Environment",
+    "Win32_System_Registry",
+] }
 
 [dev-dependencies]
 tempfile.workspace = true

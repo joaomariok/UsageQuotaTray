@@ -53,6 +53,24 @@ pub struct MeterValue {
     pub limit: Option<f64>,
     pub unit: Unit,
     pub window: Option<Window>,
+    pub breakdown: Option<Breakdown>,
+    /// The module could not identify this Meter: it is labeled with the maker's raw key,
+    /// shown in a collapsed "Unrecognized" group and never featured by default.
+    pub unrecognized: bool,
+}
+
+/// The split of one Meter's usage by surface or model.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Breakdown {
+    /// In the order the Source gave them.
+    pub parts: Vec<BreakdownPart>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct BreakdownPart {
+    pub label: String,
+    /// Share of the Meter's usage, 0 to 100.
+    pub percent: f64,
 }
 
 /// One Meter's value at one moment from one Source.

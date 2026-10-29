@@ -32,6 +32,10 @@ _Avoid_: sample, data point, measurement
 The span of time over which a Meter's usage accumulates before it resets, such as a 5-hour session, a week, or a billing month.
 _Avoid_: period, cycle, interval
 
+**Breakdown**:
+The split of one Meter's usage by surface or model, as a list of labels with their share, such as how much of the weekly usage came from Claude Code, Chats and Cowork.
+_Avoid_: split, distribution, share (for the whole list)
+
 **Exact**:
 A Meter value reported by the Assistant's maker.
 _Avoid_: actual, precise, official

@@ -2,7 +2,8 @@
 // Content comes pre-formatted from Rust (present.rs); this file only lays it out.
 
 export struct RowData {
-    // 0 Assistant header, 1 Account header, 2 Meter, 3 message (problem or notice)
+    // 0 Assistant header, 1 Account header, 2 Meter, 3 message (problem, notice or
+    // Breakdown), 4 group toggle ("Unrecognized")
     kind: int,
     title: string,
     amount: string,
@@ -38,6 +39,7 @@ export component Popup inherits Window {
     in property <[RowData]> rows;
     in property <length> content-height: 120px;
     callback dismiss();
+    callback toggle-unrecognized();
 
     property <color> fg: root.dark ? #ffffff : #1a1a1a;
     property <color> fg2: root.dark ? #ffffffa0 : #00000099;
@@ -131,6 +133,25 @@ export component Popup inherits Window {
                     font-size: 12px;
                     vertical-alignment: center;
                     overflow: elide;
+                }
+                if row.kind == 4: TouchArea {
+                    height: 24px;
+                    clicked => {
+                        root.toggle-unrecognized();
+                    }
+                    accessible-role: button;
+                    accessible-label: row.title;
+                    accessible-action-default => {
+                        root.toggle-unrecognized();
+                    }
+                    Text {
+                        width: 100%;
+                        text: row.title;
+                        color: root.fg2;
+                        font-size: 13px;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
                 }
             }
         }
