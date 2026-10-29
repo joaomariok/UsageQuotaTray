@@ -33,6 +33,9 @@ deny = [
     # (the composition root) may.
     { crate = "uqt-assistant-fake", wrappers = ["uqt-app"] },
     { crate = "uqt-assistant-anthropic", wrappers = ["uqt-app"] },
+    # The template is copied, never registered: today nothing depends on it, and core
+    # or ui never may. (An empty wrapper list would ban the workspace member itself.)
+    { crate = "uqt-assistant-template", wrappers = ["uqt-app"] },
     # Only core may depend on the HTTP crate: modules reach the network through Core's
     # host client, which enforces each module's allowed hosts.
     { crate = "ureq", wrappers = ["uqt-core"] },

@@ -6,12 +6,13 @@ use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use uqt_app::{HELPER_EXE, run_statusline_helper, statusline_installer};
+use uqt_app::{HELPER_EXE, StatuslineChange, run_statusline_helper, statusline_installer};
 use uqt_assistant_anthropic::statusline::chain::Shell;
 use uqt_assistant_anthropic::statusline::installer::Installer;
 use uqt_assistant_anthropic::{ConfigFolder, ID, sources};
 use uqt_core::push::{PushServer, pipe_name};
 use uqt_core::time::Timestamp;
+use uqt_ui::lifecycle::OutsideChange;
 
 const INPUT: &str = r#"{"model": {"display_name": "Opus"},
   "rate_limits": {"five_hour": {"used_percentage": 23.5, "resets_at": 1793285400},
@@ -99,6 +100,33 @@ fn an_installed_helper_prints_the_chained_commands_output_instead() {
     let printed = String::from_utf8(out).unwrap();
     // The chained command saw the very same input.
     assert_eq!(printed.trim(), INPUT.len().to_string());
+}
+
+#[test]
+fn removing_the_app_first_puts_back_claude_codes_statusline() {
+    let d = dirs();
+    let settings = d.folder.dir.join("settings.json");
+    let original = r#"{"statusLine": {"type": "command", "command": "~/.claude/line.sh"}}"#;
+    std::fs::write(&settings, original).unwrap();
+    let installer = Installer::new(
+        &d.folder,
+        &d.data,
+        PathBuf::from(r"C:\Apps\uqt-statusline.exe"),
+    );
+    let change = StatuslineChange::new(installer.clone());
+    assert_eq!(change.pending(), None, "nothing to undo before installing");
+
+    installer.install(Timestamp(0)).unwrap();
+    let pending = change.pending().expect("installed, so removal undoes it");
+    assert!(pending.contains("statusLine"), "{pending}");
+    assert!(
+        pending.contains(&settings.display().to_string()),
+        "{pending}"
+    );
+
+    change.undo().unwrap();
+    assert_eq!(std::fs::read_to_string(&settings).unwrap(), original);
+    assert_eq!(change.pending(), None);
 }
 
 #[test]

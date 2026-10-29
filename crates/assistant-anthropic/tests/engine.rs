@@ -477,6 +477,23 @@ fn a_429_without_retry_after_waits_5_minutes_doubling_up_to_30() {
     assert_eq!(h.run_for(100 * MIN), vec![5, 15, 35, 65, 95]);
 }
 
+#[test]
+fn a_429_after_other_failures_still_waits_5_minutes_first() {
+    let mut h = Harness::logged_in();
+    for _ in 0..2 {
+        h.transport
+            .push_response(Err(HttpError::Transport("offline".into())));
+    }
+    h.transport.push_response(status(429, &[]));
+    h.transport
+        .push_response(Err(HttpError::Transport("offline".into())));
+    h.transport.push_response(ok(LIMITS_BODY));
+    h.engine.tick();
+    // Offline at 0 and 1 (1, then 2 minutes), rate limited at 3 (5 minutes, not the
+    // third step of a shared doubling), offline again at 8 (1 minute, a new run).
+    assert_eq!(h.run_for(10 * MIN), vec![1, 3, 8, 9]);
+}
+
 // ---- The recorded Phase 0 response -------------------------------------------------
 
 /// The usage response recorded in Phase 0 (body as recorded, headers excluded).
@@ -570,6 +587,22 @@ fn usage_credits_fall_back_to_extra_usage() {
     assert_eq!(credits.limit, Some(20.0));
     assert_eq!(credits.unit, Unit::Currency("USD".into()));
     assert_eq!(credits.window, None);
+}
+
+#[test]
+fn usage_credits_fall_back_to_extra_usage_when_spend_cannot_be_read() {
+    let mut h = Harness::logged_in();
+    h.transport.push_response(ok(r#"{
+      "five_hour": {"utilization": 10.0, "resets_at": "2026-10-29T15:00:00Z"},
+      "spend": {"used": {"amount": "12.34"}, "limit": null, "enabled": true},
+      "extra_usage": {"is_enabled": true, "monthly_limit": 2000, "used_credits": 550.0,
+                      "currency": "USD", "decimal_places": 2}
+    }"#));
+    h.engine.tick();
+    let credits = h.meter(keys::USAGE_CREDITS);
+    assert_eq!(credits.used, 5.5);
+    assert_eq!(credits.limit, Some(20.0));
+    assert_eq!(credits.unit, Unit::Currency("USD".into()));
 }
 
 #[test]

@@ -2,12 +2,15 @@
 //! notification identity, removal from the PC, and one instance per session. Tests use
 //! the in-memory registry and temporary folders; nothing touches the real HKCU.
 
+use std::cell::RefCell;
 use std::io::Write;
 use std::path::Path;
+use std::rc::Rc;
 
 use uqt_ui::lifecycle::{
-    APP_ID, AUMID_KEY, Autostart, MemoryRegistry, RUN_KEY, Registry, SingleInstance, instance_name,
-    register_notifications, remove_from_pc,
+    APP_ID, AUMID_KEY, Autostart, MemoryRegistry, OutsideChange, RUN_KEY, Registry, SingleInstance,
+    instance_name, register_notifications, removal_question, remove_from_pc,
+    remove_from_pc_undoing,
 };
 
 const EXE: &str = r"C:\Tools\UsageQuotaTray\usagequotatray.exe";
@@ -107,6 +110,102 @@ fn removal_can_delete_the_data_folder_even_with_the_log_file_open() {
     remove_from_pc(&reg, Some(&data), true).unwrap();
     assert!(!data.exists());
     drop(log);
+}
+
+/// A change outside the app's own entries, recording when it was undone.
+#[derive(Debug)]
+struct FakeChange {
+    pending: Option<&'static str>,
+    fails: bool,
+    undone_with_run_value: RefCell<Option<bool>>,
+    registry: Rc<MemoryRegistry>,
+}
+
+impl FakeChange {
+    fn new(registry: &Rc<MemoryRegistry>, pending: Option<&'static str>, fails: bool) -> Self {
+        Self {
+            pending,
+            fails,
+            undone_with_run_value: RefCell::new(None),
+            registry: registry.clone(),
+        }
+    }
+}
+
+impl OutsideChange for FakeChange {
+    fn pending(&self) -> Option<String> {
+        self.pending.map(str::to_string)
+    }
+
+    fn undo(&self) -> Result<(), String> {
+        let run_value = self.registry.read_string(RUN_KEY, APP_ID).is_some();
+        *self.undone_with_run_value.borrow_mut() = Some(run_value);
+        if self.fails {
+            Err("settings.json is locked".into())
+        } else {
+            Ok(())
+        }
+    }
+}
+
+#[test]
+fn removal_first_undoes_outside_changes_then_deletes_the_entries() {
+    let reg = Rc::new(MemoryRegistry::new());
+    Autostart::new(reg.as_ref(), Path::new(EXE))
+        .set(true)
+        .unwrap();
+    let change = FakeChange::new(&reg, Some("puts back the statusLine"), false);
+
+    remove_from_pc_undoing(reg.as_ref(), &[&change], None, false).unwrap();
+
+    assert_eq!(
+        *change.undone_with_run_value.borrow(),
+        Some(true),
+        "undone while the Run value was still there"
+    );
+    assert_eq!(reg.read_string(RUN_KEY, APP_ID), None);
+}
+
+#[test]
+fn removal_stops_and_keeps_everything_when_undoing_fails() {
+    let reg = Rc::new(MemoryRegistry::new());
+    Autostart::new(reg.as_ref(), Path::new(EXE))
+        .set(true)
+        .unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let change = FakeChange::new(&reg, Some("puts back the statusLine"), true);
+
+    let error = remove_from_pc_undoing(reg.as_ref(), &[&change], Some(data.path()), true)
+        .unwrap_err()
+        .to_string();
+
+    assert!(error.contains("settings.json is locked"), "{error}");
+    assert!(reg.read_string(RUN_KEY, APP_ID).is_some());
+    assert!(data.path().exists());
+}
+
+#[test]
+fn the_removal_question_names_what_is_undone_first() {
+    let reg = Rc::new(MemoryRegistry::new());
+    let statusline = FakeChange::new(
+        &reg,
+        Some("put back Claude Code's original statusLine setting"),
+        false,
+    );
+    let nothing = FakeChange::new(&reg, None, false);
+
+    let text = removal_question(&[&statusline, &nothing], Some(r"C:\data\UsageQuotaTray"));
+    assert_eq!(
+        text,
+        "This will first put back Claude Code's original statusLine setting, then delete \
+         the Start with Windows entry, the notification registration and the folder \
+         C:\\data\\UsageQuotaTray, and quit UsageQuotaTray.\n\nRemove it now?"
+    );
+    assert_eq!(
+        removal_question(&[&nothing], None),
+        "This will delete the Start with Windows entry and the notification registration, \
+         and quit UsageQuotaTray.\n\nRemove it now?"
+    );
 }
 
 #[test]

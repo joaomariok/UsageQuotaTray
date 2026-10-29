@@ -153,6 +153,41 @@ fn a_tie_goes_to_the_meter_projected_to_hit_its_limit_soonest() {
 }
 
 #[test]
+fn the_tie_compares_the_tied_meters_projection_not_a_less_used_meters() {
+    let projected = |percent: f64, hh: u32, mm: u32| {
+        move |m: &mut MeterState| {
+            m.used = percent;
+            m.pace = Some(Pace::WillHitLimitAt(t(hh, mm)));
+        }
+    };
+    // Both Accounts peak at 60%. "quiet" has a 10% Meter projected very soon, but its
+    // 60% Meter is projected later than "pressed"'s, so "pressed" is shown.
+    let s = state(vec![assistant(
+        "a",
+        BADGE_A,
+        vec![
+            account(
+                "quiet",
+                vec![
+                    with(meter("s", 0.0), projected(60.0, 15, 0)),
+                    with(meter("w", 0.0), projected(10.0, 12, 30)),
+                ],
+                &["s", "w"],
+            ),
+            account(
+                "pressed",
+                vec![
+                    with(meter("s", 0.0), projected(60.0, 13, 0)),
+                    meter("w", 5.0),
+                ],
+                &["s", "w"],
+            ),
+        ],
+    )]);
+    assert_eq!(rings(&s), vec![0.6, 0.05]);
+}
+
+#[test]
 fn only_fresh_readings_count_as_constrained() {
     let stale = with(meter("s", 95.0), |m| m.freshness = Freshness::Stale);
     let s = state(vec![assistant(

@@ -5,11 +5,12 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use uqt_assistant_anthropic::statusline::chain::{self, Shell, chained_command};
-use uqt_assistant_anthropic::statusline::installer::{Installer, STATE_FILE};
+use uqt_assistant_anthropic::statusline::installer::{Installer, STATE_FILE, Status};
 use uqt_assistant_anthropic::{ClaudeCodeAssistant, ConfigFolder, statusline};
 use uqt_assistant_fake::{FakeAssistant, FakeControl, sources};
 use uqt_core::contract::{Assistant, FetchError};
 use uqt_core::push;
+use uqt_ui::lifecycle::OutsideChange;
 
 /// The statusline helper, shipped next to the app's exe.
 pub const HELPER_EXE: &str = "uqt-statusline.exe";
@@ -33,6 +34,34 @@ pub fn statusline_installer(
         return None;
     }
     Some(Installer::new(&folder?, data_dir, helper))
+}
+
+/// The statusline helper in Claude Code's settings, as something "Remove UsageQuotaTray
+/// from this PC" undoes first, so Claude Code is not left running a deleted helper.
+#[derive(Debug)]
+pub struct StatuslineChange(Installer);
+
+impl StatuslineChange {
+    pub fn new(installer: Installer) -> Self {
+        Self(installer)
+    }
+}
+
+impl OutsideChange for StatuslineChange {
+    fn pending(&self) -> Option<String> {
+        matches!(self.0.status(), Status::Installed { .. }).then(|| {
+            format!(
+                "put back Claude Code's original statusLine setting in {}",
+                self.0.settings_file.display()
+            )
+        })
+    }
+
+    fn undo(&self) -> Result<(), String> {
+        let outcome = self.0.uninstall().map_err(|e| e.to_string())?;
+        log::info!("statusline helper uninstalled before removal ({outcome:?})");
+        Ok(())
+    }
 }
 
 /// What the statusline helper does with one input from Claude Code, returning what
@@ -66,24 +95,39 @@ pub fn run_statusline_helper(
 /// Which modules run, decided at startup.
 #[derive(Clone, Debug, Default)]
 pub struct ModuleOptions {
-    /// On unless `UQT_CLAUDE_CODE=0`.
+    /// On, unless `UQT_CLAUDE_CODE=0` with the `dev-hooks` feature.
     pub claude_code: bool,
-    /// On in debug builds, or with `UQT_FAKE_ASSISTANT=1`.
+    /// On in debug builds, or with `UQT_FAKE_ASSISTANT=1` and the `dev-hooks` feature.
     pub fake_assistant: bool,
-    /// Every Fake Source fails with this, to see failure states (`UQT_FAKE_FAIL`).
+    /// Every Fake Source fails with this, to see failure states (`UQT_FAKE_FAIL`, with
+    /// the `dev-hooks` feature).
     pub fake_failure: Option<FetchError>,
 }
 
 impl ModuleOptions {
-    pub fn from_env() -> Self {
+    /// What this build runs: Claude Code always, the Fake Assistant in debug builds.
+    pub fn for_build() -> Self {
         Self {
+            claude_code: true,
+            fake_assistant: cfg!(debug_assertions),
+            fake_failure: None,
+        }
+    }
+
+    /// [`ModuleOptions::for_build`], changed by the `UQT_*` switches when built with the
+    /// `dev-hooks` feature; without it the environment is not read.
+    pub fn from_env() -> Self {
+        let options = Self::for_build();
+        #[cfg(feature = "dev-hooks")]
+        let options = Self {
             claude_code: std::env::var("UQT_CLAUDE_CODE").map_or(true, |v| v != "0"),
-            fake_assistant: cfg!(debug_assertions)
+            fake_assistant: options.fake_assistant
                 || std::env::var("UQT_FAKE_ASSISTANT").is_ok_and(|v| v == "1"),
             fake_failure: std::env::var("UQT_FAKE_FAIL")
                 .ok()
                 .and_then(|v| fake_failure(&v)),
-        }
+        };
+        options
     }
 }
 

@@ -29,7 +29,7 @@ Config folders: `CLAUDE_CONFIG_DIR` if set, otherwise `%USERPROFILE%\.claude`, p
 
 **The statusline helper** (`uqt-statusline.exe`, optional) is run by Claude Code after each response. It reads the JSON Claude Code pipes to it and forwards only the 5-hour and 7-day used percentage and reset time to the running tray, over a named pipe that is local to the current user. Nothing from it goes over the network. It then runs your previous statusline command with the same input and prints its output (or a short `5h 24% · 7d 41%` line if you had none).
 
-**Installing the helper** is a button in Settings. It asks first, writes a timestamped backup of Claude Code's `settings.json` next to it, keeps every other setting in order, records your previous `statusLine` command in `statusline.json` so it can be chained, and puts the helper in. Uninstall restores your original command. If you replaced the `statusLine` yourself in the meantime, it is detected and not overwritten. Nothing edits Claude Code's settings except this button.
+**Installing the helper** is a button in Settings. It asks first, writes a timestamped backup of Claude Code's `settings.json` next to it, keeps every other setting in order, records your previous `statusLine` command in `statusline.json` so it can be chained, and puts the helper in. Uninstall restores your original command and then deletes the backup. If you replaced the `statusLine` yourself in the meantime, it is detected and not overwritten. Nothing edits Claude Code's settings except this button.
 
 **Local files**, all under `%LOCALAPPDATA%\UsageQuotaTray`:
 
@@ -44,13 +44,13 @@ Config folders: `CLAUDE_CONFIG_DIR` if set, otherwise `%USERPROFILE%\.claude`, p
 - `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\UsageQuotaTray`, only if you turn on "Start with Windows".
 - `HKCU\Software\Classes\AppUserModelId\UsageQuotaTray`: the notification identity (display name and icon) so toasts show as UsageQuotaTray. Written at startup.
 
-**Removing it.** Settings has "Remove UsageQuotaTray from this PC". After you confirm, it deletes both registry entries above and, if you choose, the whole `%LOCALAPPDATA%\UsageQuotaTray` folder, then quits. It does not touch Claude Code's settings, so uninstall the statusline helper first if you installed it. Then delete the zip contents.
+**Removing it.** Settings has "Remove UsageQuotaTray from this PC". After you confirm, it first uninstalls the statusline helper if it is installed, putting your original `statusLine` back in Claude Code's settings (the confirmation says so), then deletes both registry entries above and, if you choose, the whole `%LOCALAPPDATA%\UsageQuotaTray` folder, and quits. If the `statusLine` cannot be put back, nothing is removed and the app keeps running. Then delete the zip contents.
 
 ## Known limitations
 
 - **Undocumented endpoint.** The usage endpoint is not a documented, supported API. It is the one Claude Code's own usage view uses. It can change or disappear without notice; the app then says the endpoint changed instead of showing wrong numbers.
 - **Shared rate limit.** Its rate limit is shared with Claude Code itself. The app polls every 5 minutes while you are present and 15 minutes when idle, pauses while the PC is locked or asleep, backs off on errors and honors `Retry-After`. The shortest interval you can set is 2 minutes, with a warning in Settings for anything under 5 minutes. The statusline helper gives real-time numbers without extra requests.
-- **Terms of use.** Using this endpoint with your own Claude Code login may not be covered by Anthropic's terms for the API or for consumer subscriptions. I have not verified that it is allowed. Decide for yourself; if in doubt, don't use the Claude Code module (`UQT_CLAUDE_CODE=0` turns it off).
+- **Terms of use.** Using this endpoint with your own Claude Code login may not be covered by Anthropic's terms for the API or for consumer subscriptions. I have not verified that it is allowed. Decide for yourself; if in doubt, don't use the Claude Code module (switch Claude Code off in Settings).
 - **Shared quotas.** On a Claude subscription, included usage is shared across Claude Code, Claude chat and Cowork, so your weekly Meter can move when you are not coding. The app says so, and shows the weekly split (the Breakdown) when the endpoint provides it.
 - **Estimates.** Values are labeled **Exact** when the Assistant's maker reports them and **Estimate** when the app derives them from partial data. The Claude Code module currently reports only Exact values. Never read an Estimate as the maker's number.
 - Alert memory is not kept across restarts, and some Windows integration (toast click, Explorer restart, light/dark taskbar) has not been verified on every setup.
@@ -73,7 +73,9 @@ cargo test --workspace
 cargo deny check
 ```
 
-Tests use fake transports and recorded fixtures; they never call a real host. For a safe manual run, set `UQT_CLAUDE_CODE=0`, `UQT_NOTIFICATIONS=off`, and point `LOCALAPPDATA` at a throwaway folder.
+Tests use fake transports and recorded fixtures; they never call a real host.
+
+Development switches are compiled in only with the `dev-hooks` feature (`cargo build --features dev-hooks`); a normal build ignores every `UQT_*` variable. Debug builds always add the Fake Assistant. With the feature: `UQT_CLAUDE_CODE=0` leaves out the Claude Code module, `UQT_FAKE_ASSISTANT=1` adds the Fake Assistant, `UQT_FAKE_FAIL=offline|expired|not-logged-in|changed|rate-limited` makes it fail, `UQT_NOTIFICATIONS=off` skips the notification registration and toasts, and `UQT_READY_FILE`, `UQT_ICON_CHURN=1` and `UQT_SHOT=popup|settings` drive measurement and screenshot runs. For a safe manual run, use a `dev-hooks` build with `UQT_CLAUDE_CODE=0` and `UQT_NOTIFICATIONS=off`, and point `LOCALAPPDATA` at a throwaway folder. `tools/measure/measure.ps1` builds such an exe when given no `-Exe`.
 
 ## Packaging
 

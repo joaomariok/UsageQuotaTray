@@ -15,6 +15,12 @@ path = "src/main.rs"
 name = "uqt-statusline"
 path = "src/bin/uqt-statusline.rs"
 
+[features]
+# Development switches read from the environment: the UI's measurement hooks plus
+# UQT_CLAUDE_CODE, UQT_FAKE_ASSISTANT and UQT_FAKE_FAIL. Off in shipped builds, which
+# ignore every UQT_* variable; debug builds run the Fake Assistant either way.
+dev-hooks = ["uqt-ui/dev-hooks"]
+
 [dependencies]
 uqt-core.workspace = true
 uqt-ui.workspace = true

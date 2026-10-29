@@ -15,6 +15,6 @@ mod session;
 mod settings_window;
 mod shell;
 
-pub use shell::{ShellOptions, run};
+pub use shell::{DevHooks, ShellOptions, Shot, run};
 
 slint::include_modules!();

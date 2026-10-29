@@ -1,10 +1,12 @@
 //! UsageQuotaTray: one per-user tray process.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
 
-use uqt_app::{ModuleOptions, app_data_dir, enabled_modules_with, statusline_installer};
+use uqt_app::{
+    ModuleOptions, StatuslineChange, app_data_dir, enabled_modules_with, statusline_installer,
+};
 use uqt_assistant_anthropic::ConfigFolder;
 use uqt_core::engine::Engine;
 use uqt_core::http::UreqTransport;
@@ -12,8 +14,8 @@ use uqt_core::logging::FileLogger;
 use uqt_core::push::pipe_name;
 use uqt_core::settings::SettingsStore;
 use uqt_core::time::SystemClock;
-use uqt_ui::ShellOptions;
-use uqt_ui::lifecycle::{SingleInstance, instance_name};
+use uqt_ui::lifecycle::{OutsideChange, SingleInstance, instance_name};
+use uqt_ui::{DevHooks, ShellOptions};
 
 fn main() {
     let data = app_data_dir();
@@ -45,6 +47,11 @@ fn main() {
         }
         _ => None,
     };
+    // Removal from the PC puts Claude Code's statusLine back first.
+    let outside_changes: Vec<Rc<dyn OutsideChange>> = statusline
+        .iter()
+        .map(|i| Rc::new(StatuslineChange::new(i.clone())) as Rc<dyn OutsideChange>)
+        .collect();
     let modules = enabled_modules_with(&ModuleOptions::from_env(), statusline);
     // Every request goes through each module's host client into this one transport,
     // on the scheduler thread.
@@ -56,19 +63,25 @@ fn main() {
     );
     let options = ShellOptions {
         badges_dir: data.as_ref().map(|d| d.join("badges")),
-        ready_file: std::env::var_os("UQT_READY_FILE").map(PathBuf::from),
-        icon_churn: std::env::var("UQT_ICON_CHURN").is_ok_and(|v| v == "1"),
         push_pipe: data.as_deref().map(pipe_name),
         data_dir: data,
         settings,
         settings_store: store,
         exe,
-        // Measurement runs turn this off so they never touch the registry.
-        notifications: !std::env::var("UQT_NOTIFICATIONS").is_ok_and(|v| v == "off"),
+        outside_changes,
+        dev: dev_hooks(),
     };
     if let Err(e) = uqt_ui::run(engine, clock, options) {
         log::error!("UI failed: {e}");
     }
     log::info!("UsageQuotaTray exiting");
     log::logger().flush();
+}
+
+/// The measurement switches, read only in a `dev-hooks` build.
+fn dev_hooks() -> DevHooks {
+    #[cfg(feature = "dev-hooks")]
+    return DevHooks::from_env();
+    #[cfg(not(feature = "dev-hooks"))]
+    DevHooks::default()
 }

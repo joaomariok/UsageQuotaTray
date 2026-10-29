@@ -1,4 +1,4 @@
-//! Redaction, carried over from the Phase 0 spike. Every log line goes through [`mask`],
+//! Redaction of secrets and personal data in text. Every log line goes through [`mask`],
 //! so no token, key, email address or account identifier reaches a log file.
 
 use serde_json::Value;

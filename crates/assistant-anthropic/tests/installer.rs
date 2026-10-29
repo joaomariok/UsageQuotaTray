@@ -3,10 +3,11 @@
 //! touches the real ~/.claude.
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use serde_json::{Value, json};
 use tempfile::TempDir;
-use uqt_assistant_anthropic::statusline::chain::chained_command;
+use uqt_assistant_anthropic::statusline::chain::{Shell, chained_command, run};
 use uqt_assistant_anthropic::statusline::installer::{
     InstallError, Installer, Status, Uninstalled,
 };
@@ -47,6 +48,7 @@ impl Files {
             settings_file,
             state_file: data.join("statusline.json"),
             helper: PathBuf::from(r"C:\Apps\UsageQuotaTray\uqt-statusline.exe"),
+            shell: Shell::powershell(),
         };
         Self {
             _temp: temp,
@@ -149,6 +151,40 @@ fn uninstalling_right_after_installing_restores_the_original_bytes() {
 }
 
 #[test]
+fn a_restoring_uninstall_removes_the_backup_it_made() {
+    for edited_since in [false, true] {
+        let f = Files::new(Some(ORIGINAL));
+        let backup = f.installer.install(now()).unwrap().backup.unwrap();
+        if edited_since {
+            let mut changed = f.settings();
+            changed["model"] = json!("sonnet");
+            let text = serde_json::to_string_pretty(&changed).unwrap();
+            std::fs::write(&f.installer.settings_file, text).unwrap();
+        }
+        assert_eq!(f.installer.uninstall().unwrap(), Uninstalled::Restored);
+        assert!(!backup.exists(), "edited since: {edited_since}");
+        let dir = f.installer.settings_file.parent().unwrap();
+        assert_eq!(
+            std::fs::read_dir(dir).unwrap().count(),
+            1,
+            "only settings.json"
+        );
+    }
+}
+
+#[test]
+fn an_uninstall_that_leaves_the_file_alone_keeps_the_backup() {
+    let f = Files::new(Some(ORIGINAL));
+    let backup = f.installer.install(now()).unwrap().backup.unwrap();
+    let mut changed = f.settings();
+    changed["statusLine"] = json!({"type": "command", "command": "my-new-line"});
+    let text = serde_json::to_string_pretty(&changed).unwrap();
+    std::fs::write(&f.installer.settings_file, text).unwrap();
+    assert_eq!(f.installer.uninstall().unwrap(), Uninstalled::LeftAlone);
+    assert_eq!(std::fs::read_to_string(&backup).unwrap(), ORIGINAL);
+}
+
+#[test]
 fn uninstalling_after_other_changes_restores_only_the_status_line() {
     let f = Files::new(Some(ORIGINAL));
     f.installer.install(now()).unwrap();
@@ -243,7 +279,8 @@ fn a_settings_file_that_is_not_json_is_never_touched() {
 #[test]
 fn a_helper_path_the_shell_would_split_is_refused() {
     let mut f = Files::new(Some(ORIGINAL));
-    f.installer.helper = PathBuf::from(r"C:\Program Files\UsageQuotaTray\uqt-statusline.exe");
+    // A quote ends the quoting both shells use for paths with spaces.
+    f.installer.helper = PathBuf::from(r"C:\Users\O'Brien\UsageQuotaTray\uqt-statusline.exe");
     assert!(matches!(
         f.installer.install(now()),
         Err(InstallError::UnsafeHelperPath(_))
@@ -261,6 +298,56 @@ fn a_previous_command_that_is_the_helper_itself_is_not_chained() {
     assert_eq!(done.chained, None);
     f.installer.uninstall().unwrap();
     assert_eq!(f.settings(), json!({}));
+}
+
+/// The shells Claude Code may run the `statusLine` command through on this PC:
+/// PowerShell always, Git Bash when it is installed.
+fn shells() -> Vec<Shell> {
+    let mut shells = vec![Shell::powershell()];
+    let found = Shell::from_env();
+    if found != Shell::powershell() {
+        shells.push(found);
+    }
+    shells
+}
+
+#[test]
+fn a_helper_path_with_spaces_is_quoted_so_the_shell_runs_it() {
+    for shell in shells() {
+        let mut f = Files::new(Some(ORIGINAL));
+        // Any program at the path will do: `sort` prints its input back.
+        let dir = f
+            ._temp
+            .path()
+            .join("Program Files")
+            .join("Usage Quota Tray");
+        std::fs::create_dir_all(&dir).unwrap();
+        let helper = dir.join("uqt-statusline.exe");
+        std::fs::copy(r"C:\Windows\System32\sort.exe", &helper).unwrap();
+        f.installer.helper = helper;
+        f.installer.shell = shell.clone();
+
+        f.installer.install(now()).unwrap();
+        assert_eq!(
+            f.installer.status(),
+            Status::Installed {
+                chained: Some("~/.claude/statusline.sh".into())
+            }
+        );
+        let command = f.settings()["statusLine"]["command"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let out =
+            run(&shell, &command, b"helper ran\n", Duration::from_secs(30)).unwrap_or_default();
+        assert_eq!(
+            String::from_utf8_lossy(&out).trim(),
+            "helper ran",
+            "{shell:?} ran {command}"
+        );
+        f.installer.uninstall().unwrap();
+        assert_eq!(f.settings_text(), ORIGINAL);
+    }
 }
 
 #[test]

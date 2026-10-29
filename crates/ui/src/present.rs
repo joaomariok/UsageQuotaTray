@@ -97,19 +97,18 @@ pub struct MeterRow {
 
 /// How constrained an Account's Featured Meters are: the highest fresh Used/Limit
 /// (in tenths of a percent, so near-equal values tie), then the soonest projected
-/// exhaustion. Greater is more constrained.
+/// exhaustion among the Meters at that highest value. Greater is more constrained.
 fn constraint(acc: &AccountState, now: Timestamp) -> Option<(i64, std::cmp::Reverse<i64>)> {
-    let fresh: Vec<&MeterState> = featured(acc)
-        .filter(|m| m.freshness == Freshness::Fresh && m.fraction().is_some())
+    let tenths = |m: &MeterState| m.fraction().map(|f| (f * 1000.0).round() as i64);
+    let fresh: Vec<(i64, &MeterState)> = featured(acc)
+        .filter(|m| m.freshness == Freshness::Fresh)
+        .filter_map(|m| Some((tenths(m)?, m)))
         .collect();
-    let highest = fresh
-        .iter()
-        .filter_map(|m| m.fraction())
-        .map(|f| (f * 1000.0).round() as i64)
-        .max()?;
+    let highest = fresh.iter().map(|(t, _)| *t).max()?;
     let soonest = fresh
         .iter()
-        .filter_map(|m| match m.pace {
+        .filter(|(t, _)| *t == highest)
+        .filter_map(|(_, m)| match m.pace {
             Some(Pace::LimitReached) => Some(now.0),
             Some(Pace::WillHitLimitAt(t)) => Some(t.0),
             _ => None,

@@ -4,14 +4,17 @@
 //! `statusLine` command is recorded so the helper can chain it, and uninstalling puts
 //! the original back.
 //!
-//! The settings format (`statusLine: {type: "command", command, padding}`, commands run
-//! through Git Bash or PowerShell, forward slashes in paths) is from
-//! https://code.claude.com/docs/en/statusline.
+//! The settings format (`statusLine: {type: "command", command, padding}`) and how the
+//! command runs on Windows (through Git Bash when it is installed, else through
+//! PowerShell; forward slashes in paths, since Git Bash eats backslashes) are from
+//! https://code.claude.com/docs/en/statusline ("Windows configuration").
 
 use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value, json};
 use uqt_core::time::Timestamp;
+
+use super::chain::Shell;
 
 const KEY: &str = "statusLine";
 /// The installation record's name in UsageQuotaTray's app-data folder.
@@ -27,6 +30,9 @@ pub struct Installer {
     pub state_file: PathBuf,
     /// The helper executable.
     pub helper: PathBuf,
+    /// The shell Claude Code runs the `statusLine` command through, which decides how a
+    /// helper path with spaces is quoted.
+    pub shell: Shell,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -59,7 +65,7 @@ pub enum Uninstalled {
 pub enum InstallError {
     /// The settings file is not a JSON object; it was not changed.
     NotJson(String),
-    /// The helper's path has characters the shell would split or interpret.
+    /// The helper's path has characters a shell would interpret even when quoted.
     UnsafeHelperPath(PathBuf),
     Io(std::io::Error),
 }
@@ -73,8 +79,8 @@ impl std::fmt::Display for InstallError {
             ),
             Self::UnsafeHelperPath(p) => write!(
                 f,
-                "the helper's folder {} has spaces or other characters a shell would split; \
-                 move UsageQuotaTray to a folder without them",
+                "the helper's folder {} has quotes or other characters a shell would \
+                 interpret; move UsageQuotaTray to a folder without them",
                 p.display()
             ),
             Self::Io(e) => write!(f, "{e}"),
@@ -148,38 +154,74 @@ impl Installer {
             settings_file: folder.dir.join("settings.json"),
             state_file: data_dir.join(STATE_FILE),
             helper,
+            shell: Shell::from_env(),
         }
     }
 
     /// The statusline command set now, if any and if it is not the helper. Read only.
     pub fn current_command(&self) -> Option<String> {
         let (settings, _) = read_settings(&self.settings_file).ok()??;
+        if self.is_helper(&settings[KEY]) {
+            return None;
+        }
         chainable(&settings[KEY], &self.helper_command().ok()?)
     }
 
     /// The `statusLine` command: the helper's path with forward slashes, which both
-    /// Git Bash and PowerShell run as written.
+    /// Git Bash and PowerShell run as written. A path with spaces or other characters
+    /// a shell splits on is quoted for [`Installer::shell`]: in single quotes for Git
+    /// Bash, and after PowerShell's call operator `&` (a quoted string alone is only a
+    /// value there, not a command).
     pub fn helper_command(&self) -> Result<String, InstallError> {
-        let text = self.helper.display().to_string().replace('\\', "/");
-        let safe = !text.is_empty()
-            && text
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || "/:._-~".contains(c));
-        if safe {
-            Ok(text)
+        let forms = self.helper_forms()?;
+        Ok(if self.shell.is_bash() {
+            forms.bash
         } else {
-            Err(InstallError::UnsafeHelperPath(self.helper.clone()))
+            forms.powershell
+        })
+    }
+
+    /// The helper's command as each shell runs it.
+    fn helper_forms(&self) -> Result<HelperForms, InstallError> {
+        let text = self.helper.display().to_string().replace('\\', "/");
+        let plain = |c: char| c.is_ascii_alphanumeric() || "/:._-~".contains(c);
+        if !text.is_empty() && text.chars().all(plain) {
+            return Ok(HelperForms {
+                bash: text.clone(),
+                powershell: text,
+            });
         }
+        // Inside single quotes both shells take every character literally except the
+        // quote itself (PowerShell also ends a string at its typographic quotes).
+        let quotable =
+            |c: char| !c.is_control() && !"'\u{2018}\u{2019}\u{201a}\u{201b}".contains(c);
+        if text.is_empty() || !text.chars().all(quotable) {
+            return Err(InstallError::UnsafeHelperPath(self.helper.clone()));
+        }
+        Ok(HelperForms {
+            bash: format!("'{text}'"),
+            powershell: format!("& '{text}'"),
+        })
+    }
+
+    /// Whether `line` runs the helper, written for either shell (Git Bash may have
+    /// been installed or removed since).
+    fn is_helper(&self, line: &Value) -> bool {
+        let Ok(forms) = self.helper_forms() else {
+            return false;
+        };
+        let command = line["command"].as_str().map(str::trim);
+        command == Some(forms.bash.as_str()) || command == Some(forms.powershell.as_str())
     }
 
     pub fn status(&self) -> Status {
-        let Ok(command) = self.helper_command() else {
+        if self.helper_forms().is_err() {
             return Status::NotInstalled;
-        };
+        }
         let current = read_settings(&self.settings_file).ok().flatten();
         let ours = current
             .as_ref()
-            .is_some_and(|(v, _)| is_helper(&v[KEY], &command));
+            .is_some_and(|(v, _)| self.is_helper(&v[KEY]));
         match (Record::read(&self.state_file), ours) {
             (Some(record), true) => Status::Installed {
                 chained: record.chained(),
@@ -196,7 +238,7 @@ impl Installer {
         let command = self.helper_command()?;
         let current = read_settings(&self.settings_file)?;
         if let Some((v, _)) = &current
-            && is_helper(&v[KEY], &command)
+            && self.is_helper(&v[KEY])
         {
             let record = Record::read(&self.state_file);
             return Ok(Installed {
@@ -256,11 +298,11 @@ impl Installer {
     /// changed since installing, else only the `statusLine` key. A `statusLine` that
     /// is no longer the helper is left alone.
     pub fn uninstall(&self) -> Result<Uninstalled, InstallError> {
-        let command = self.helper_command()?;
+        self.helper_forms()?;
         let record = Record::read(&self.state_file);
         let current = read_settings(&self.settings_file)?;
         let outcome = match current {
-            Some((mut settings, text)) if is_helper(&settings[KEY], &command) => {
+            Some((mut settings, text)) if self.is_helper(&settings[KEY]) => {
                 let original = record.as_ref().and_then(|r| {
                     if text != r.written {
                         return None;
@@ -298,16 +340,29 @@ impl Installer {
             }
             _ => Uninstalled::LeftAlone,
         };
-        match std::fs::remove_file(&self.state_file) {
-            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
-            _ => {}
+        // The backup was only needed until the original was back. When the file was
+        // left alone it may still be the user's only copy of their setting, so it stays.
+        if outcome == Uninstalled::Restored
+            && let Some(backup) = record.as_ref().and_then(|r| r.backup.as_ref())
+        {
+            remove_if_present(backup)?;
         }
+        remove_if_present(&self.state_file)?;
         Ok(outcome)
     }
 }
 
-fn is_helper(line: &Value, command: &str) -> bool {
-    line["command"].as_str().map(str::trim) == Some(command)
+fn remove_if_present(path: &Path) -> std::io::Result<()> {
+    match std::fs::remove_file(path) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+        _ => Ok(()),
+    }
+}
+
+/// The helper's command as Git Bash and as PowerShell run it.
+struct HelperForms {
+    bash: String,
+    powershell: String,
 }
 
 /// The settings as JSON plus their text, `None` when the file does not exist.

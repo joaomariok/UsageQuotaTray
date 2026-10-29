@@ -32,6 +32,11 @@ impl Shell {
         }
     }
 
+    /// Whether this is Git Bash (else PowerShell).
+    pub fn is_bash(&self) -> bool {
+        self.args.first().is_some_and(|a| a == "-c")
+    }
+
     pub fn powershell() -> Self {
         Self {
             program: PathBuf::from("powershell.exe"),

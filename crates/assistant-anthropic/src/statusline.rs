@@ -173,9 +173,26 @@ fn same_folder(a: &str, b: &Path) -> bool {
     norm(a) == norm(&b.display().to_string())
 }
 
-/// Readings pushed by the helper for one config folder (Exact, never polled).
+/// Readings pushed by the helper for the config folders of one Account (Exact, never
+/// polled).
 pub(crate) struct StatuslineSource {
-    pub(crate) folder: ConfigFolder,
+    /// Every folder holding the Account's login, with its position (for the
+    /// placeholder id of an unidentified login).
+    pub(crate) folders: Vec<(usize, ConfigFolder)>,
+    /// The Account this Source was made for.
+    pub(crate) account_id: String,
+}
+
+impl StatuslineSource {
+    /// Whether a push from `origin` belongs to this Account: it came from one of its
+    /// folders, and that folder is still signed in to the same login. Another login in
+    /// the folder is another Account; the engine picks it up on its next discovery.
+    fn is_mine(&self, origin: &str) -> bool {
+        self.folders.iter().any(|(index, folder)| {
+            same_folder(origin, &folder.dir)
+                && crate::account_info(folder, *index).id == self.account_id
+        })
+    }
 }
 
 impl Source for StatuslineSource {
@@ -217,7 +234,7 @@ impl Source for StatuslineSource {
     }
 
     fn accept_push(&mut self, message: &PushMessage) -> Option<FetchOutput> {
-        if !same_folder(&message.origin, &self.folder.dir) {
+        if !self.is_mine(&message.origin) {
             return None;
         }
         let limits = &message.payload["rate_limits"];

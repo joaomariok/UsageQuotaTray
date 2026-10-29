@@ -282,3 +282,70 @@ fn the_helpers_own_line_shows_both_windows() {
     );
     assert_eq!(statusline::summary(br#"{"model": {}}"#), "");
 }
+
+fn write_identity(dir: &Path, account: &str) {
+    std::fs::write(
+        dir.join(".claude.json"),
+        format!(
+            r#"{{"oauthAccount": {{"accountUuid": "{account}", "organizationUuid": "org",
+                "emailAddress": "{account}@example.com"}}}}"#
+        ),
+    )
+    .unwrap();
+}
+
+/// An engine over these config folders, each with a login of the given account.
+fn engine_over(folders: &[(&Path, &str)]) -> (Engine, Vec<ConfigFolder>) {
+    let found: Vec<ConfigFolder> = folders
+        .iter()
+        .map(|(dir, account)| {
+            std::fs::create_dir_all(dir).unwrap();
+            write_login(dir);
+            write_identity(dir, account);
+            ConfigFolder::new(dir.to_path_buf())
+        })
+        .collect();
+    let engine = Engine::new(
+        vec![Box::new(ClaudeCodeAssistant::new(found.clone()))],
+        Arc::new(FakeClock::new(start())),
+        Arc::new(RecordingTransport::new()),
+    );
+    (engine, found)
+}
+
+#[test]
+fn a_push_after_the_folder_signed_in_to_another_account_is_refused() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path().join(".claude");
+    let (mut engine, folders) = engine_over(&[(&dir, "alice")]);
+    write_identity(&dir, "bob");
+    let m = statusline::push_message(input(5.0, 5.0).as_bytes(), &folders[0]).unwrap();
+    assert!(
+        !engine.push(&m),
+        "bob's numbers must not be filed under alice's Account"
+    );
+    let state = engine.state();
+    assert!(
+        state.assistants[0].accounts[0]
+            .meter(keys::SESSION)
+            .is_none()
+    );
+}
+
+#[test]
+fn a_push_from_any_folder_of_the_same_login_is_that_accounts() {
+    let temp = tempfile::tempdir().unwrap();
+    let first = temp.path().join("first");
+    let second = temp.path().join("second");
+    let (mut engine, folders) = engine_over(&[(&first, "alice"), (&second, "alice")]);
+    assert_eq!(
+        engine.state().assistants[0].accounts.len(),
+        1,
+        "one Account"
+    );
+    let m = statusline::push_message(input(7.0, 8.0).as_bytes(), &folders[1]).unwrap();
+    assert!(engine.push(&m));
+    let state = engine.state();
+    let account = &state.assistants[0].accounts[0];
+    assert_eq!(account.meter(keys::SESSION).map(|m| m.used), Some(7.0));
+}

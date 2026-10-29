@@ -37,7 +37,7 @@ pub trait Registry {
 }
 
 /// An in-memory registry for tests. Key paths compare case-insensitively, as in Windows.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct MemoryRegistry {
     values: Mutex<BTreeMap<(String, String), String>>,
 }
@@ -205,9 +205,82 @@ pub fn register_notifications(registry: &dyn Registry, icon: &Path) -> io::Resul
     registry.write_string(AUMID_KEY, "IconUri", &icon.display().to_string())
 }
 
+/// A change UsageQuotaTray made to another program's files on the user's request (the
+/// statusline helper in Claude Code's settings), which removal undoes first. The app
+/// crate supplies these; the UI never names an Assistant.
+pub trait OutsideChange: std::fmt::Debug {
+    /// What undoing it does, for the confirmation ("put back Claude Code's original
+    /// statusLine setting"); `None` when there is nothing to undo now.
+    fn pending(&self) -> Option<String>;
+    /// Undoes it. The error is shown to the user.
+    fn undo(&self) -> Result<(), String>;
+}
+
+/// The confirmation for "Remove UsageQuotaTray from this PC": what is undone first,
+/// then what is deleted.
+pub fn removal_question(changes: &[&dyn OutsideChange], data_folder: Option<&str>) -> String {
+    let first: Vec<String> = changes.iter().filter_map(|c| c.pending()).collect();
+    let mut text = String::from("This will ");
+    if !first.is_empty() {
+        text.push_str(&format!("first {}, then ", first.join(" and ")));
+    }
+    match data_folder {
+        Some(folder) => text.push_str(&format!(
+            "delete the Start with Windows entry, the notification registration and the \
+             folder {folder}"
+        )),
+        None => {
+            text.push_str("delete the Start with Windows entry and the notification registration")
+        }
+    }
+    text.push_str(", and quit UsageQuotaTray.\n\nRemove it now?");
+    text
+}
+
 /// "Remove UsageQuotaTray from this PC": the Run value, the notification identity and,
 /// when asked, the app-data folder (settings, logs, Badge overrides).
 pub fn remove_from_pc(
+    registry: &dyn Registry,
+    data_dir: Option<&Path>,
+    delete_data: bool,
+) -> io::Result<()> {
+    delete_entries(registry, data_dir, delete_data)
+}
+
+/// Why a removal stopped.
+#[derive(Debug)]
+pub enum RemovalError {
+    /// A change could not be undone; nothing was deleted.
+    NotUndone(String),
+    /// The changes were undone, but deleting the app's entries failed partway.
+    Partly(io::Error),
+}
+
+impl std::fmt::Display for RemovalError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotUndone(e) => write!(f, "Nothing was removed: {e}"),
+            Self::Partly(e) => write!(f, "Not everything could be removed: {e}"),
+        }
+    }
+}
+
+/// [`remove_from_pc`] after undoing `changes` that have something pending. When one
+/// cannot be undone nothing is deleted, so the user can fix it and try again while
+/// the app (and its record of the change) is still there.
+pub fn remove_from_pc_undoing(
+    registry: &dyn Registry,
+    changes: &[&dyn OutsideChange],
+    data_dir: Option<&Path>,
+    delete_data: bool,
+) -> Result<(), RemovalError> {
+    for change in changes.iter().filter(|c| c.pending().is_some()) {
+        change.undo().map_err(RemovalError::NotUndone)?;
+    }
+    delete_entries(registry, data_dir, delete_data).map_err(RemovalError::Partly)
+}
+
+fn delete_entries(
     registry: &dyn Registry,
     data_dir: Option<&Path>,
     delete_data: bool,

@@ -7,15 +7,30 @@
 # The app runs with the Fake Assistant and a throwaway LOCALAPPDATA, so the real app-data
 # folder is never touched, and with UQT_NOTIFICATIONS=off, so it neither registers the
 # notification identity in the registry nor shows toasts.
+# These UQT_* switches only work in a build with the `dev-hooks` feature; a normal build
+# ignores them (and would register notifications), so the script refuses such an exe.
+# Without -Exe it builds one: cargo build --release -p uqt-app --features dev-hooks.
 param(
-    [Parameter(Mandatory)][string]$Exe,
+    [string]$Exe,
     [string]$Name = 'usagequotatray',
     [int]$Seconds = 20,
     [switch]$Churn,
     [switch]$WithClaudeCode
 )
 $ErrorActionPreference = 'Stop'
+if (-not $Exe) {
+    $repo = Resolve-Path (Join-Path $PSScriptRoot '..\..')
+    cargo build --release -p uqt-app --features dev-hooks --manifest-path (Join-Path $repo 'Cargo.toml')
+    if ($LASTEXITCODE -ne 0) { throw 'cargo build failed' }
+    $target = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $repo 'target' }
+    $Exe = Join-Path $target 'release\usagequotatray.exe'
+}
 $Exe = (Resolve-Path $Exe).Path
+# The switch names are compiled in only with the feature.
+$text = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($Exe))
+if (-not $text.Contains('UQT_NOTIFICATIONS')) {
+    throw "$Exe was built without --features dev-hooks; it would ignore the measurement switches"
+}
 Add-Type -Namespace Native -Name User32 -MemberDefinition '[DllImport("user32.dll")] public static extern uint GetGuiResources(IntPtr hProcess, uint uiFlags);'
 
 function Get-Tree([int]$RootId) {

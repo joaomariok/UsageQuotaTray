@@ -78,8 +78,8 @@ impl AlertMemory {
                 self.fired.clear();
                 self.crossed_first = false;
             }
-            // Without a Window, a drop below the first threshold is the only sign of a
-            // new period.
+            // When the Window is not reported, a drop below the first threshold is the
+            // only sign that a new Window began.
             (None, _) if thresholds.first().is_some_and(|t| percent < f64::from(*t)) => {
                 self.fired.clear();
                 self.crossed_first = false;

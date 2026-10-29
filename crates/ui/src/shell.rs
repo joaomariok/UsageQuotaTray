@@ -1,6 +1,12 @@
 //! The running tray app: tray icon, context menu, popup, and the hand-off from the
 //! scheduler thread to the UI thread. Win32 and Slint glue; the content it shows comes
-//! from [`crate::present`].
+//! from [`crate::present`]. Alerts and the notification identity live in
+//! [`notifications`], the Start-with-Windows toggle in [`autostart`], and the switches
+//! for measurement runs in [`dev_hooks`].
+
+mod autostart;
+mod dev_hooks;
+mod notifications;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -12,16 +18,18 @@ use std::time::{Duration, Instant};
 use slint::{ComponentHandle, ModelRc, PhysicalPosition, Timer, TimerMode, VecModel};
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
-use uqt_core::engine::{Alert, Catalog, Engine, EngineState, RefreshReason};
+use uqt_core::engine::{Catalog, Engine, EngineState, RefreshReason};
 use uqt_core::push::PushServer;
 use uqt_core::runner::{EngineHandle, EngineThread, Update};
 use uqt_core::settings::{Settings, SettingsEdit, SettingsStore};
 use uqt_core::time::Clock;
-use windows::Win32::Foundation::HWND;
+
+pub(crate) use autostart::set as set_autostart;
+pub use dev_hooks::{DevHooks, Shot};
 
 use crate::badge::resolve_badge;
-use crate::icon::{IconStyle, app_icon_png, render_icon};
-use crate::lifecycle::{self, Autostart, CurrentUserRegistry};
+use crate::icon::{IconStyle, render_icon};
+use crate::lifecycle::{self, CurrentUserRegistry, OutsideChange};
 use crate::notify::{self, Toasts};
 use crate::present::{self, ActionRequest, Moment, PopupView, Ring, SettingsView, Tone, TrayView};
 use crate::{Popup, RowData, platform, session, settings_window};
@@ -36,11 +44,6 @@ const REOPEN_GUARD: Duration = Duration::from_millis(400);
 pub struct ShellOptions {
     /// The user's Badge override folder.
     pub badges_dir: Option<PathBuf>,
-    /// Measurement mode: write this file once the tray icon exists, and show the popup
-    /// once at start (hidden after 2 s) like the prototype measurements did.
-    pub ready_file: Option<PathBuf>,
-    /// Leak test: redraw the icon every 500 ms with changing rings.
-    pub icon_churn: bool,
     /// The local app-data folder (settings, logs, Badge overrides, notification icon).
     pub data_dir: Option<PathBuf>,
     /// The settings the engine started with.
@@ -49,11 +52,13 @@ pub struct ShellOptions {
     pub settings_store: Option<SettingsStore>,
     /// This exe, for the Start-with-Windows entry.
     pub exe: Option<PathBuf>,
-    /// Register the notification identity and show toasts. Off for measurement runs,
-    /// which must not write to the registry.
-    pub notifications: bool,
     /// The push channel's pipe name; `None` starts no push channel.
     pub push_pipe: Option<String>,
+    /// Changes to other programs' files that "Remove UsageQuotaTray from this PC"
+    /// undoes first (the statusline helper in Claude Code's settings).
+    pub outside_changes: Vec<Rc<dyn OutsideChange>>,
+    /// Measurement and screenshot switches; the defaults are a normal run.
+    pub dev: DevHooks,
 }
 
 struct Ui {
@@ -65,6 +70,7 @@ struct Ui {
     store: Option<SettingsStore>,
     exe: Option<PathBuf>,
     data_dir: Option<PathBuf>,
+    outside_changes: Vec<Rc<dyn OutsideChange>>,
     toasts: Option<Toasts>,
     autostart_item: CheckMenuItem,
     clock: Arc<dyn Clock>,
@@ -322,7 +328,7 @@ fn on_update(update: Update) {
     });
     present_now();
     for alert in &update.alerts {
-        raise(alert);
+        notifications::raise(alert);
     }
     settings_window::refresh();
     for outcome in &update.outcomes {
@@ -345,46 +351,6 @@ pub(crate) fn run_action(request: ActionRequest) {
     with_ui(|ui| ui.engine.run_action(request.assistant, request.key));
 }
 
-/// Shows an alert as a toast, or as a tray balloon when the toast fails.
-fn raise(alert: &Alert) {
-    with_ui(|ui| {
-        let at = Moment {
-            now: ui.clock.now(),
-            utc_offset_secs: platform::utc_offset_secs(),
-        };
-        let message = present::alert_message(alert, at);
-        log::info!("alert: {} ({})", message.title, alert.meter_key);
-        let Some(toasts) = ui.toasts.as_mut() else {
-            return;
-        };
-        let click = || {
-            let _ = slint::invoke_from_event_loop(open_popup);
-        };
-        if let Err(e) = toasts.show(&message, click) {
-            log::warn!("toast failed ({e}); showing a balloon");
-            if let Some(tray) = &ui.tray {
-                notify::balloon(HWND(tray.window_handle()), &message);
-            }
-        }
-    });
-}
-
-/// Writes the notification icon next to the settings and registers the identity.
-fn register_notification_identity(data_dir: Option<&std::path::Path>) {
-    let Some(dir) = data_dir else { return };
-    let icon = dir.join("notification.png");
-    if let Some(png) = app_icon_png(64)
-        && std::fs::create_dir_all(dir).is_ok()
-        && std::fs::read(&icon).ok().as_deref() != Some(png.as_slice())
-        && let Err(e) = std::fs::write(&icon, png)
-    {
-        log::warn!("could not write the notification icon: {e}");
-    }
-    if let Err(e) = lifecycle::register_notifications(&CurrentUserRegistry, &icon) {
-        log::warn!("could not register the notification identity: {e}");
-    }
-}
-
 /// What the settings window shows now.
 pub(crate) fn settings_view() -> Option<SettingsView> {
     with_ui(|ui| {
@@ -396,7 +362,7 @@ pub(crate) fn settings_view() -> Option<SettingsView> {
             &ui.catalog,
             ui.state.as_ref().unwrap_or(&empty),
             &ui.settings,
-            autostart_enabled(ui),
+            autostart::enabled(ui),
         )
     })
 }
@@ -405,12 +371,6 @@ pub(crate) fn data_folder_text() -> String {
     with_ui(|ui| ui.data_dir.as_ref().map(|d| d.display().to_string()))
         .flatten()
         .unwrap_or_else(|| "(no app-data folder)".into())
-}
-
-fn autostart_enabled(ui: &Ui) -> bool {
-    ui.exe
-        .as_deref()
-        .is_some_and(|exe| Autostart::new(&CurrentUserRegistry, exe).is_enabled())
 }
 
 /// Applies one settings change: saved at once, sent to the engine, shown again.
@@ -427,41 +387,31 @@ pub(crate) fn apply_edit(edit: SettingsEdit) {
     settings_window::refresh();
 }
 
-/// The Start-with-Windows toggle, from the menu or the settings window.
-pub(crate) fn set_autostart(on: bool) {
-    with_ui(|ui| {
-        if let Some(exe) = ui.exe.as_deref()
-            && let Err(e) = Autostart::new(&CurrentUserRegistry, exe).set(on)
-        {
-            log::error!("could not change Start with Windows: {e}");
-        }
-        ui.autostart_item.set_checked(autostart_enabled(ui));
-    });
-    settings_window::refresh();
-}
-
-/// "Remove UsageQuotaTray from this PC", after the user confirms; then quits.
+/// "Remove UsageQuotaTray from this PC", after the user confirms: first undoes the
+/// changes made to other programs' files (the statusline helper), then deletes the
+/// app's entries; then quits. When undoing fails nothing is deleted and the app stays.
 pub(crate) fn remove_from_pc(delete_data: bool) {
     let owner = settings_window::hwnd();
-    let mut text =
-        String::from("This deletes the Start with Windows entry and the notification registration");
-    if delete_data {
-        text.push_str(&format!(" and the folder {}", data_folder_text()));
-    }
-    text.push_str(", then quits UsageQuotaTray.\n\nRemove it now?");
+    let changes = with_ui(|ui| ui.outside_changes.clone()).unwrap_or_default();
+    let changes: Vec<&dyn OutsideChange> = changes.iter().map(|c| c.as_ref()).collect();
+    let folder = delete_data.then(data_folder_text);
+    let text = lifecycle::removal_question(&changes, folder.as_deref());
     if !platform::confirm(owner, "Remove UsageQuotaTray", &text) {
         return;
     }
     let data_dir = with_ui(|ui| ui.data_dir.clone()).flatten();
     log::info!("removing UsageQuotaTray from this PC (delete data: {delete_data})");
-    if let Err(e) =
-        lifecycle::remove_from_pc(&CurrentUserRegistry, data_dir.as_deref(), delete_data)
-    {
-        platform::show_error(
-            owner,
-            "Remove UsageQuotaTray",
-            &format!("Not everything could be removed: {e}"),
-        );
+    let result = lifecycle::remove_from_pc_undoing(
+        &CurrentUserRegistry,
+        &changes,
+        data_dir.as_deref(),
+        delete_data,
+    );
+    if let Err(e) = &result {
+        platform::show_error(owner, "Remove UsageQuotaTray", &e.to_string());
+        if matches!(e, lifecycle::RemovalError::NotUndone(_)) {
+            return;
+        }
     }
     // Nothing may write settings after this.
     with_ui(|ui| ui.store = None);
@@ -471,17 +421,15 @@ pub(crate) fn remove_from_pc(delete_data: bool) {
 /// Runs the tray app until "Exit". The engine moves to the scheduler thread.
 pub fn run(engine: Engine, clock: Arc<dyn Clock>, options: ShellOptions) -> Result<(), String> {
     platform::set_per_monitor_dpi_awareness();
-    if options.notifications {
+    let notifications = !options.dev.notifications_off;
+    if notifications {
         // Before any window exists, so Windows attributes everything to the identity.
         notify::set_app_id();
-        register_notification_identity(options.data_dir.as_deref());
+        notifications::register_identity(options.data_dir.as_deref());
     }
     let popup = Popup::new().map_err(|e| e.to_string())?;
 
-    let autostart_on = options
-        .exe
-        .as_deref()
-        .is_some_and(|exe| Autostart::new(&CurrentUserRegistry, exe).is_enabled());
+    let autostart_on = autostart::enabled_for(options.exe.as_deref());
     let menu = Menu::new();
     let refresh_item = MenuItem::new("Refresh now", true, None);
     let usage_item = MenuItem::new("Open usage page", true, None);
@@ -541,7 +489,8 @@ pub fn run(engine: Engine, clock: Arc<dyn Clock>, options: ShellOptions) -> Resu
             store: options.settings_store.clone(),
             exe: options.exe.clone(),
             data_dir: options.data_dir.clone(),
-            toasts: options.notifications.then(Toasts::new),
+            outside_changes: options.outside_changes.clone(),
+            toasts: notifications.then(Toasts::new),
             autostart_item,
             clock,
             engine: handle.clone(),
@@ -671,92 +620,15 @@ pub fn run(engine: Engine, clock: Arc<dyn Clock>, options: ShellOptions) -> Resu
     let minute_timer = Timer::default();
     minute_timer.start(TimerMode::Repeated, Duration::from_secs(60), present_now);
 
-    let measure_timers = measurement_timers(&popup, &style_timer, &options);
+    #[cfg(feature = "dev-hooks")]
+    let dev_timers = dev_hooks::timers(&popup, &style_timer, &options.dev);
 
     slint::run_event_loop_until_quit().map_err(|e| e.to_string())?;
 
-    drop(measure_timers);
+    #[cfg(feature = "dev-hooks")]
+    drop(dev_timers);
     engine_thread.shutdown();
     // Removes the tray icon before the process exits.
     UI.with(|u| u.borrow_mut().take());
     Ok(())
-}
-
-fn measurement_timers(
-    popup: &Popup,
-    style_timer: &Rc<Timer>,
-    options: &ShellOptions,
-) -> Vec<Timer> {
-    let mut timers = Vec::new();
-    if let Some(path) = options.ready_file.clone() {
-        show_popup(popup, style_timer);
-        let ready = Timer::default();
-        ready.start(
-            TimerMode::SingleShot,
-            Duration::from_millis(100),
-            move || {
-                let _ = std::fs::write(&path, "ready");
-            },
-        );
-        timers.push(ready);
-        let hide = Timer::default();
-        let weak = popup.as_weak();
-        hide.start(TimerMode::SingleShot, Duration::from_secs(2), move || {
-            if let Some(p) = weak.upgrade() {
-                hide_popup(&p);
-            }
-        });
-        timers.push(hide);
-    }
-    // Screenshot runs: UQT_SHOT=popup keeps the popup open, UQT_SHOT=settings opens the
-    // settings window once the first state has arrived. Dev aid; never set in normal use.
-    match std::env::var("UQT_SHOT").as_deref() {
-        Ok("popup") => {
-            let open = Timer::default();
-            let weak = popup.as_weak();
-            let style = style_timer.clone();
-            open.start(TimerMode::SingleShot, Duration::from_secs(1), move || {
-                if let Some(p) = weak.upgrade() {
-                    show_popup(&p, &style);
-                }
-            });
-            timers.push(open);
-        }
-        Ok("settings") => {
-            let open = Timer::default();
-            open.start(
-                TimerMode::SingleShot,
-                Duration::from_secs(1),
-                settings_window::open,
-            );
-            timers.push(open);
-        }
-        _ => {}
-    }
-    if options.icon_churn {
-        let churn = Timer::default();
-        let start = Instant::now();
-        churn.start(TimerMode::Repeated, Duration::from_millis(500), move || {
-            let t = start.elapsed().as_secs_f32();
-            let rings = [
-                Ring {
-                    fraction: 0.5 + 0.45 * (t * 0.6).sin(),
-                    tone: Tone::Green,
-                },
-                Ring {
-                    fraction: 0.5 + 0.45 * (t * 0.4 + 1.0).cos(),
-                    tone: Tone::Amber,
-                },
-            ];
-            with_ui(|ui| {
-                let svg = ui.badges.values().next().cloned().unwrap_or_default();
-                if let (Some(tray), Some(icon)) = (ui.tray.as_ref(), make_icon(&rings, &svg, false))
-                {
-                    let _ = tray.set_icon(Some(icon));
-                }
-            });
-        });
-        timers.push(churn);
-    }
-    timers
 }

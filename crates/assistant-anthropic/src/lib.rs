@@ -289,22 +289,27 @@ impl Assistant for ClaudeCodeAssistant {
     }
 
     fn sources(&mut self, account: &AccountInfo) -> Vec<Box<dyn Source>> {
-        let found = self
+        // Every folder holding this login: polling reads the first, while the
+        // statusline helper may run for any of them.
+        let found: Vec<(usize, ConfigFolder)> = self
             .folders()
             .enumerate()
-            .find(|(i, f)| account_info(f, *i).id == account.id);
-        let Some((index, folder)) = found else {
+            .filter(|(i, f)| account_info(f, *i).id == account.id)
+            .map(|(i, f)| (i, f.clone()))
+            .collect();
+        let Some((index, folder)) = found.first().cloned() else {
             return Vec::new();
         };
         vec![
             Box::new(UsageSource {
-                folder: folder.clone(),
+                folder,
                 index,
                 account_id: account.id.clone(),
                 env: self.env.clone(),
             }),
             Box::new(statusline::StatuslineSource {
-                folder: folder.clone(),
+                folders: found,
+                account_id: account.id.clone(),
             }),
         ]
     }
@@ -312,7 +317,7 @@ impl Assistant for ClaudeCodeAssistant {
 
 /// The login's identity (account plus organization) from the account file, or a
 /// placeholder per folder while there is none.
-fn account_info(folder: &ConfigFolder, index: usize) -> AccountInfo {
+pub(crate) fn account_info(folder: &ConfigFolder, index: usize) -> AccountInfo {
     let account = folder
         .read_account_file()
         .and_then(|json| json.get("oauthAccount").cloned())

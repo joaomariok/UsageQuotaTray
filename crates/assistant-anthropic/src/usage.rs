@@ -136,30 +136,15 @@ fn model_weekly(json: &Value) -> Vec<MeterValue> {
         .collect()
 }
 
-/// Credits used against the monthly spend limit, from the structured `spend` object or
-/// else from `extra_usage`. Absent while credits are disabled. No reset date is given,
-/// so there is no Window.
+/// Credits used against the monthly spend limit, from the structured `spend` object or,
+/// when that is missing or cannot be read, from `extra_usage`. Absent while credits are
+/// disabled. No reset date is given, so there is no Window.
 fn usage_credits(json: &Value) -> Option<MeterValue> {
     let spend = &json["spend"];
-    let extra = &json["extra_usage"];
-    let (used, limit, currency) = if spend.is_object() {
-        if spend["enabled"].as_bool() == Some(false) {
-            return None;
-        }
-        let (used, currency) = money(&spend["used"])?;
-        (used, money(&spend["limit"]).map(|l| l.0), currency)
-    } else if extra.is_object() {
-        if extra["is_enabled"].as_bool() != Some(true) {
-            return None;
-        }
-        let scale = 10f64.powi(extra["decimal_places"].as_i64().unwrap_or(2) as i32);
-        let currency = extra["currency"].as_str()?.to_string();
-        let used = extra["used_credits"].as_f64().unwrap_or(0.0) / scale;
-        let limit = extra["monthly_limit"].as_f64().map(|l| l / scale);
-        (used, limit, currency)
-    } else {
+    if spend["enabled"].as_bool() == Some(false) {
         return None;
-    };
+    }
+    let (used, limit, currency) = spend_credits(spend).or_else(|| extra_credits(json))?;
     Some(MeterValue {
         key: keys::USAGE_CREDITS.into(),
         label: "Usage credits".into(),
@@ -170,6 +155,25 @@ fn usage_credits(json: &Value) -> Option<MeterValue> {
         breakdown: None,
         unrecognized: false,
     })
+}
+
+/// Used, limit and currency from the structured `spend` object.
+fn spend_credits(spend: &Value) -> Option<(f64, Option<f64>, String)> {
+    let (used, currency) = money(&spend["used"])?;
+    Some((used, money(&spend["limit"]).map(|l| l.0), currency))
+}
+
+/// Used, limit and currency from `extra_usage` (amounts scaled by `decimal_places`).
+fn extra_credits(json: &Value) -> Option<(f64, Option<f64>, String)> {
+    let extra = &json["extra_usage"];
+    if extra["is_enabled"].as_bool() != Some(true) {
+        return None;
+    }
+    let scale = 10f64.powi(extra["decimal_places"].as_i64().unwrap_or(2) as i32);
+    let currency = extra["currency"].as_str()?.to_string();
+    let used = extra["used_credits"].as_f64().unwrap_or(0.0) / scale;
+    let limit = extra["monthly_limit"].as_f64().map(|l| l / scale);
+    Some((used, limit, currency))
 }
 
 /// A structured money value: amount in minor units with its exponent, and currency.

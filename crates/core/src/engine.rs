@@ -142,7 +142,11 @@ struct SourceRun {
     last_attempt: Option<Timestamp>,
     /// Earliest next attempt after a failure, and whether a manual refresh may skip it.
     retry_at: Option<(Timestamp, Hold)>,
+    /// Consecutive failures of the same kind (rate limited or not): each kind has its
+    /// own backoff, so a 429 after being offline still starts at its first step.
     failures: u32,
+    /// Whether the failures counted in `failures` are rate limits.
+    rate_limited: bool,
     problem: Option<SourceProblem>,
     forced: Option<(Timestamp, RefreshReason)>,
     notices: Vec<Notice>,
@@ -242,6 +246,7 @@ impl AssistantRun {
                             last_attempt: None,
                             retry_at: None,
                             failures: 0,
+                            rate_limited: false,
                             problem: None,
                             forced: None,
                             notices: Vec::new(),
@@ -557,6 +562,11 @@ impl Engine {
                             record(&mut account.readings, &mut account.order, run, output, now);
                         }
                         Err(error) => {
+                            let rate_limited = matches!(error, FetchError::RateLimited { .. });
+                            if run.rate_limited != rate_limited {
+                                run.failures = 0;
+                                run.rate_limited = rate_limited;
+                            }
                             run.failures += 1;
                             let (delay, hold) = backoff(&error, run.failures);
                             log::warn!(
@@ -677,7 +687,8 @@ fn record(
     }
 }
 
-/// Delay before the next attempt after `failures` consecutive failures.
+/// Delay before the next attempt after `failures` consecutive failures of `error`'s
+/// kind.
 fn backoff(error: &FetchError, failures: u32) -> (i64, Hold) {
     let doubling = |start: i64| {
         let factor = 1_i64 << (failures.saturating_sub(1)).min(16);
