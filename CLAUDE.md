@@ -1,4 +1,4 @@
-# QuotaTray
+# UsageQuotaTray
 
 ## Agent skills
 
