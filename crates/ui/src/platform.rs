@@ -13,9 +13,9 @@ use windows::Win32::UI::HiDpi::{
     SetProcessDpiAwarenessContext,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetForegroundWindow, IDYES, MB_DEFBUTTON2, MB_ICONERROR, MB_ICONWARNING, MB_OK, MB_YESNO,
-    MessageBoxW, SM_CXSMICON, SPI_GETWORKAREA, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
-    SetForegroundWindow, SystemParametersInfoW,
+    GetForegroundWindow, IDYES, MB_DEFBUTTON2, MB_ICONERROR, MB_ICONINFORMATION, MB_ICONWARNING,
+    MB_OK, MB_YESNO, MessageBoxW, SM_CXSMICON, SPI_GETWORKAREA,
+    SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SetForegroundWindow, SystemParametersInfoW,
 };
 use windows::core::{HSTRING, PCWSTR, w};
 
@@ -151,6 +151,14 @@ pub fn confirm(owner: Option<HWND>, title: &str, text: &str) -> bool {
             &title,
             MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2,
         ) == IDYES
+    }
+}
+
+/// A message the user should see.
+pub fn show_info(owner: Option<HWND>, title: &str, text: &str) {
+    let (title, text) = (HSTRING::from(title), HSTRING::from(text));
+    unsafe {
+        MessageBoxW(owner, &text, &title, MB_OK | MB_ICONINFORMATION);
     }
 }
 

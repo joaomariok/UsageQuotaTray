@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use crate::http::HostClient;
 use crate::model::{AccountInfo, BadgeSpec, Exactness, MeterKey, MeterValue, Notice};
+use crate::push::PushMessage;
 use crate::settings::ModuleValues;
 use crate::time::Timestamp;
 
@@ -27,6 +28,11 @@ pub trait Assistant: Send {
     /// The user's values for [`Assistant::settings_fields`]; keys the user never set are
     /// absent. Called before the first discovery and after every settings change.
     fn configure(&mut self, _values: &ModuleValues) {}
+    /// Runs the [`FieldKind::Action`] field `key` (the UI has already asked the user
+    /// to confirm, when the field asks for it). Returns what to tell the user.
+    fn run_action(&mut self, key: &str) -> Result<String, String> {
+        Err(format!("{} has no action {key}", self.display_name()))
+    }
     fn discover_accounts(&mut self) -> Vec<AccountInfo>;
     fn sources(&mut self, account: &AccountInfo) -> Vec<Box<dyn Source>>;
 }
@@ -49,6 +55,14 @@ pub enum FieldKind {
     Text {
         default: String,
         placeholder: String,
+    },
+    /// A button that runs [`Assistant::run_action`] at once; it stores no value. The
+    /// label and help may describe the current state, since the settings description
+    /// is read again after every change.
+    Action {
+        button: String,
+        /// Asked as a yes/no question before the action runs.
+        confirm: Option<String>,
     },
 }
 
@@ -76,6 +90,16 @@ pub trait Source: Send {
         None
     }
     fn fetch(&mut self, ctx: &FetchContext<'_>) -> Result<FetchOutput, FetchError>;
+    /// A push Source that only receives [`PushMessage`]s and is never polled.
+    fn push_only(&self) -> bool {
+        false
+    }
+    /// The values in a message from the push channel, or `None` when the message is
+    /// not for this Source and Account (or carries nothing usable). The engine routes
+    /// only messages whose assistant and source ids match.
+    fn accept_push(&mut self, _message: &PushMessage) -> Option<FetchOutput> {
+        None
+    }
     /// What the user can do about `error`, in the Assistant's own words
     /// ("run Claude Code once"); shown next to the generic failure text.
     fn failure_hint(&self, _error: &FetchError) -> Option<String> {

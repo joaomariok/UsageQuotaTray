@@ -6,6 +6,7 @@
 //! request's Authorization header; it is never logged, stored or shown.
 
 mod plan;
+pub mod statusline;
 mod usage;
 
 use std::ffi::OsString;
@@ -15,6 +16,7 @@ use std::time::Duration;
 
 pub use plan::{API_KEY_VAR, EnvProbe, EnvScope, Plan, SystemEnv};
 use serde_json::Value;
+use statusline::installer::Installer;
 use uqt_core::contract::{
     Assistant, FetchContext, FetchError, FetchOutput, FieldKind, Intervals, SettingField, Source,
 };
@@ -58,6 +60,8 @@ pub mod keys {
 /// Source ids.
 pub mod sources {
     pub const USAGE: &str = "claude-usage";
+    /// Pushed by the statusline helper after every Claude Code response.
+    pub const STATUSLINE: &str = "claude-statusline";
 }
 
 const SIGNED_IN_ELSEWHERE: &str = "this folder is now signed in to another account";
@@ -147,12 +151,16 @@ pub mod settings_keys {
     pub const EXTRA_FOLDERS: &str = "extra_config_folders";
 }
 
+/// The settings key of the statusline install/uninstall button.
+pub const STATUSLINE_FIELD: &str = "statusline";
+
 pub struct ClaudeCodeAssistant {
     /// Found without the user's help (the default folder).
     base: Vec<ConfigFolder>,
     /// Added by hand in settings.
     extra: Vec<ConfigFolder>,
     env: Arc<dyn EnvProbe>,
+    statusline: Option<Installer>,
 }
 
 impl ClaudeCodeAssistant {
@@ -163,7 +171,14 @@ impl ClaudeCodeAssistant {
             base: folders,
             extra: Vec::new(),
             env: Arc::new(SystemEnv),
+            statusline: None,
         }
+    }
+
+    /// Offers installing the statusline helper in settings, with these files.
+    pub fn with_statusline(mut self, installer: Installer) -> Self {
+        self.statusline = Some(installer);
+        self
     }
 
     /// Checks for an API key through `env` instead of the real environment.
@@ -234,7 +249,7 @@ impl Assistant for ClaudeCodeAssistant {
     }
 
     fn settings_fields(&self) -> Vec<SettingField> {
-        vec![SettingField {
+        let mut fields = vec![SettingField {
             key: settings_keys::EXTRA_FOLDERS,
             label: "Extra config folders".into(),
             help: Some(
@@ -245,9 +260,11 @@ impl Assistant for ClaudeCodeAssistant {
             ),
             kind: FieldKind::Text {
                 default: String::new(),
-                placeholder: r"D:\claude-work; \\wsl.localhost\Ubuntu\home\me\.claude".into(),
+                placeholder: r"D:\claude-work; \wsl.localhost\Ubuntu\home\me\.claude".into(),
             },
-        }]
+        }];
+        fields.extend(self.statusline.as_ref().map(statusline::settings_field));
+        fields
     }
 
     fn configure(&mut self, values: &ModuleValues) {
@@ -255,6 +272,13 @@ impl Assistant for ClaudeCodeAssistant {
             Some(SettingValue::Text(text)) => parse_folders(text),
             _ => Vec::new(),
         };
+    }
+
+    fn run_action(&mut self, key: &str) -> Result<String, String> {
+        match (&self.statusline, key) {
+            (Some(installer), STATUSLINE_FIELD) => statusline::toggle(installer),
+            _ => Err(format!("Claude Code has no action {key}")),
+        }
     }
 
     /// One Account per login, even when Claude Code is missing or logged out in a
@@ -269,17 +293,20 @@ impl Assistant for ClaudeCodeAssistant {
             .folders()
             .enumerate()
             .find(|(i, f)| account_info(f, *i).id == account.id);
-        found
-            .map(|(index, folder)| {
-                Box::new(UsageSource {
-                    folder: folder.clone(),
-                    index,
-                    account_id: account.id.clone(),
-                    env: self.env.clone(),
-                }) as Box<dyn Source>
-            })
-            .into_iter()
-            .collect()
+        let Some((index, folder)) = found else {
+            return Vec::new();
+        };
+        vec![
+            Box::new(UsageSource {
+                folder: folder.clone(),
+                index,
+                account_id: account.id.clone(),
+                env: self.env.clone(),
+            }),
+            Box::new(statusline::StatuslineSource {
+                folder: folder.clone(),
+            }),
+        ]
     }
 }
 

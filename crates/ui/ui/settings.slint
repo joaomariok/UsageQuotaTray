@@ -11,7 +11,8 @@ export { NavLogic }
 
 export struct SettingRowData {
     // 0 Assistant switch, 1 Account switch, 2 Meter (Featured checkbox and thresholds),
-    // 3 module setting switch, 4 module setting text, 5 note
+    // 3 module setting switch, 4 module setting text, 5 note,
+    // 6 module action (button labelled with `text`)
     kind: int,
     label: string,
     detail: string,
@@ -41,6 +42,7 @@ export component SettingsWindow inherits Window {
     callback row-toggled(int, bool);
     callback row-edited(int, string);
     callback row-accepted(int, string);
+    callback row-clicked(int);
     callback poll-selected(int);
     callback reset-notifications-toggled(bool);
     callback start-with-windows-toggled(bool);
@@ -185,6 +187,28 @@ export component SettingsWindow inherits Window {
                                 }
                                 accepted(t) => {
                                     root.row-accepted(i, t);
+                                }
+                            }
+                            if row.detail != "": Caption {
+                                text: row.detail;
+                            }
+                        }
+                        if row.kind == 6: Card {
+                            HorizontalLayout {
+                                spacing: 12px;
+                                Text {
+                                    text: row.label;
+                                    color: Palette.foreground;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                    wrap: word-wrap;
+                                }
+                                Button {
+                                    text: row.text;
+                                    accessible-label: row.text + " " + row.label;
+                                    clicked => {
+                                        root.row-clicked(i);
+                                    }
                                 }
                             }
                             if row.detail != "": Caption {

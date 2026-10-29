@@ -11,7 +11,9 @@ use uqt_core::engine::{
 use uqt_core::model::{BadgeSpec, Exactness, Unit};
 use uqt_core::settings::{SettingValue, Settings, SettingsEdit};
 use uqt_core::time::Timestamp;
-use uqt_ui::present::{Input, RowKind, RowTarget, SettingRow, SettingsView, settings_view};
+use uqt_ui::present::{
+    ActionRequest, Input, RowKind, RowTarget, SettingRow, SettingsView, settings_view,
+};
 
 const BADGE: BadgeSpec = BadgeSpec {
     svg: "<svg/>",
@@ -287,6 +289,47 @@ fn module_settings_are_rendered_from_the_modules_description() {
             value: SettingValue::Text("E:\\c".into()),
         })
     );
+}
+
+fn action_field() -> SettingField {
+    SettingField {
+        key: "hook",
+        label: "Statusline push".into(),
+        help: Some("Not installed.".into()),
+        kind: FieldKind::Action {
+            button: "Install".into(),
+            confirm: Some("Change the file now?".into()),
+        },
+    }
+}
+
+#[test]
+fn an_action_field_is_a_button_that_asks_before_running() {
+    let mut c = catalog(false, false);
+    c.assistants[0].fields.push(action_field());
+    let v = settings_view(&c, &state(&["a"]), &Settings::default(), false);
+    let r = row(&v, "Statusline push");
+    assert_eq!(r.kind, RowKind::Action);
+    assert_eq!(r.text, "Install", "the button's label");
+    assert_eq!(r.detail, "Not installed.");
+    assert_eq!(
+        r.action(),
+        Some(ActionRequest {
+            assistant: "t".into(),
+            key: "hook".into(),
+            confirm: Some("Change the file now?".into()),
+        })
+    );
+    assert_eq!(r.edit(Input::Toggled(true)), None, "it stores no value");
+    assert_eq!(row(&v, "Read WSL folders").action(), None);
+}
+
+#[test]
+fn actions_alone_need_no_apply_on_restart_note() {
+    let mut c = catalog(false, false);
+    c.assistants[0].fields = vec![action_field()];
+    let v = settings_view(&c, &state(&["a"]), &Settings::default(), false);
+    assert!(!v.rows.iter().any(|r| r.kind == RowKind::Note));
 }
 
 #[test]

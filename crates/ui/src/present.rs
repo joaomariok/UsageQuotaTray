@@ -3,7 +3,9 @@
 
 mod settings;
 
-pub use settings::{Input, RowKind, RowTarget, SettingRow, SettingsView, settings_view};
+pub use settings::{
+    ActionRequest, Input, RowKind, RowTarget, SettingRow, SettingsView, settings_view,
+};
 use uqt_core::contract::FetchError;
 use uqt_core::engine::{
     AccountState, Alert, AlertKind, AssistantState, EngineState, Freshness, MeterState, Pace,

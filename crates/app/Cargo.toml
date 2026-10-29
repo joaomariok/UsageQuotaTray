@@ -10,9 +10,17 @@ publish.workspace = true
 name = "usagequotatray"
 path = "src/main.rs"
 
+# Claude Code's statusLine command (the statusline push); ships next to the app.
+[[bin]]
+name = "uqt-statusline"
+path = "src/bin/uqt-statusline.rs"
+
 [dependencies]
 uqt-core.workspace = true
 uqt-ui.workspace = true
 uqt-assistant-fake.workspace = true
 uqt-assistant-anthropic.workspace = true
 log.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

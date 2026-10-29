@@ -33,6 +33,17 @@ pub enum RowKind {
     Text,
     /// Explanatory text.
     Note,
+    /// A module action: a button (labelled with `text`) with `detail` beside it.
+    Action,
+}
+
+/// What pressing an action row's button asks for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ActionRequest {
+    pub assistant: String,
+    pub key: String,
+    /// Ask this yes/no question first; run only on yes.
+    pub confirm: Option<String>,
 }
 
 /// What a row's control changes.
@@ -55,6 +66,7 @@ pub enum RowTarget {
         assistant: String,
         key: String,
     },
+    Action(ActionRequest),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -92,6 +104,14 @@ impl SettingRow {
             text: String::new(),
             placeholder: String::new(),
             target,
+        }
+    }
+
+    /// What the row's button runs, for action rows.
+    pub fn action(&self) -> Option<ActionRequest> {
+        match &self.target {
+            RowTarget::Action(request) => Some(request.clone()),
+            _ => None,
         }
     }
 
@@ -276,11 +296,28 @@ pub fn settings_view(
                     r.placeholder = placeholder.clone();
                     r
                 }
+                FieldKind::Action { button, confirm } => {
+                    let mut r = SettingRow::new(
+                        RowKind::Action,
+                        &f.label,
+                        RowTarget::Action(ActionRequest {
+                            assistant: a.id.into(),
+                            key: f.key.into(),
+                            confirm: confirm.clone(),
+                        }),
+                    );
+                    r.text = button.clone();
+                    r
+                }
             };
             row.detail = f.help.clone().unwrap_or_default();
             rows.push(row);
         }
-        if !a.fields.is_empty() {
+        // Actions apply at once; stored values only on the next start.
+        if a.fields
+            .iter()
+            .any(|f| !matches!(f.kind, FieldKind::Action { .. }))
+        {
             rows.push(SettingRow::new(RowKind::Note, MODULE_NOTE, RowTarget::None));
         }
     }

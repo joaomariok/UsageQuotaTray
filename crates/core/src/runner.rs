@@ -7,7 +7,8 @@ use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use crate::engine::{Alert, Catalog, Engine, EngineState, Presence, RefreshReason};
+use crate::engine::{ActionOutcome, Alert, Catalog, Engine, EngineState, Presence, RefreshReason};
+use crate::push::PushMessage;
 use crate::settings::Settings;
 use crate::time::Clock;
 
@@ -15,6 +16,8 @@ enum Command {
     Refresh(RefreshReason),
     Presence(Presence),
     Settings(Box<Settings>),
+    Push(Box<PushMessage>),
+    Action { assistant: String, key: String },
     Shutdown,
 }
 
@@ -25,6 +28,8 @@ pub struct Update {
     /// Raised since the previous update; each alert is published once.
     pub alerts: Vec<Alert>,
     pub catalog: Catalog,
+    /// Settings actions finished since the previous update; each is published once.
+    pub outcomes: Vec<ActionOutcome>,
 }
 
 /// Sends commands to the scheduler thread; cheap to clone, usable from any thread.
@@ -42,6 +47,16 @@ impl EngineHandle {
 
     pub fn apply_settings(&self, settings: Settings) {
         let _ = self.0.send(Command::Settings(Box::new(settings)));
+    }
+
+    /// A message from the push channel.
+    pub fn push(&self, message: PushMessage) {
+        let _ = self.0.send(Command::Push(Box::new(message)));
+    }
+
+    /// Runs a module's settings action; its outcome comes with the next [`Update`].
+    pub fn run_action(&self, assistant: String, key: String) {
+        let _ = self.0.send(Command::Action { assistant, key });
     }
 }
 
@@ -66,6 +81,7 @@ impl EngineThread {
                         state: engine.state(),
                         alerts: engine.take_alerts(),
                         catalog: engine.catalog(),
+                        outcomes: engine.take_outcomes(),
                     });
                     let command = match engine.next_wake() {
                         Some(at) => {
@@ -78,6 +94,14 @@ impl EngineThread {
                         Ok(Command::Refresh(reason)) => engine.request_refresh(reason),
                         Ok(Command::Presence(p)) => engine.set_presence(p),
                         Ok(Command::Settings(s)) => engine.apply_settings(&s),
+                        Ok(Command::Push(m)) => {
+                            if !engine.push(&m) {
+                                log::info!("push for {}/{} not accepted", m.assistant, m.source);
+                            }
+                        }
+                        Ok(Command::Action { assistant, key }) => {
+                            engine.run_action(&assistant, &key)
+                        }
                         Ok(Command::Shutdown) | Err(RecvTimeoutError::Disconnected) => break,
                         Err(RecvTimeoutError::Timeout) => {}
                     }

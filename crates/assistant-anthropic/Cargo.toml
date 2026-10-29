@@ -10,7 +10,8 @@ publish.workspace = true
 uqt-core.workspace = true
 log.workspace = true
 serde.workspace = true
-serde_json.workspace = true
+# preserve_order: the installer keeps Claude Code's settings keys in their order.
+serde_json = { workspace = true, features = ["preserve_order"] }
 # Existence checks for ANTHROPIC_API_KEY (process environment and registry); no values.
 windows = { version = "0.62.2", features = [
     "Win32_Foundation",
