@@ -1,0 +1,138 @@
+// The tray flyout: every Meter of every Account, grouped by Assistant, then Account.
+// Content comes pre-formatted from Rust (present.rs); this file only lays it out.
+
+export struct RowData {
+    // 0 Assistant header, 1 Account header, 2 Meter, 3 message (problem or notice)
+    kind: int,
+    title: string,
+    amount: string,
+    detail: string,
+    meta: string,
+    fraction: float,
+    has-bar: bool,
+    // 0 normal (accent), 1 amber, 2 red
+    tone: int,
+    stale: bool,
+}
+
+component Bar inherits Rectangle {
+    in property <float> fraction;
+    in property <color> fill;
+    in property <color> track;
+    height: 6px;
+    border-radius: 3px;
+    background: root.track;
+    Rectangle {
+        x: 0;
+        width: parent.width * min(max(root.fraction, 0), 1);
+        height: parent.height;
+        border-radius: 3px;
+        background: root.fill;
+    }
+}
+
+export component Popup inherits Window {
+    in property <bool> dark: true;
+    in property <bool> solid: true;
+    in property <color> accent: #60cdff;
+    in property <[RowData]> rows;
+    in property <length> content-height: 120px;
+    callback dismiss();
+
+    property <color> fg: root.dark ? #ffffff : #1a1a1a;
+    property <color> fg2: root.dark ? #ffffffa0 : #00000099;
+    property <color> track: root.dark ? #ffffff30 : #00000025;
+
+    title: "UsageQuotaTray";
+    no-frame: true;
+    always-on-top: true;
+    width: 360px;
+    height: root.content-height;
+    // Solid Fluent layer colour unless the acrylic backdrop is in use.
+    background: root.solid ? (root.dark ? #2b2b2b : #f3f3f3) : transparent;
+    default-font-family: "Segoe UI Variable Text";
+
+    FocusScope {
+        key-pressed(event) => {
+            if (event.text == Key.Escape) {
+                root.dismiss();
+                return accept;
+            }
+            reject
+        }
+
+        VerticalLayout {
+            padding: 16px;
+            spacing: 4px;
+            alignment: start;
+
+            for row in root.rows: VerticalLayout {
+                if row.kind == 0: Text {
+                    height: 32px;
+                    text: row.title;
+                    color: root.fg;
+                    font-size: 16px;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+                if row.kind == 1: Text {
+                    height: 24px;
+                    text: row.title;
+                    color: root.fg2;
+                    font-size: 13px;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+                if row.kind == 2: VerticalLayout {
+                    height: 72px;
+                    spacing: 4px;
+                    alignment: center;
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Text {
+                            text: row.title;
+                            color: row.stale ? root.fg2 : root.fg;
+                            font-size: 14px;
+                            overflow: elide;
+                            horizontal-stretch: 1;
+                        }
+                        Text {
+                            text: row.amount;
+                            color: row.stale ? root.fg2 : root.fg;
+                            font-size: 14px;
+                            font-weight: 600;
+                            horizontal-alignment: right;
+                        }
+                    }
+                    if row.has-bar: Bar {
+                        fraction: row.fraction;
+                        track: root.track;
+                        fill: row.stale ? root.fg2 : (row.tone == 2 ? #d73a49 : (row.tone == 1 ? #e3a008 : root.accent));
+                    }
+                    Text {
+                        text: row.detail;
+                        color: root.fg2;
+                        font-size: 12px;
+                        overflow: elide;
+                    }
+                    Text {
+                        text: row.meta;
+                        color: root.fg2;
+                        font-size: 12px;
+                        overflow: elide;
+                    }
+                }
+                if row.kind == 3: Text {
+                    height: 20px;
+                    text: row.title;
+                    color: root.fg2;
+                    font-size: 12px;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
+        }
+    }
+}

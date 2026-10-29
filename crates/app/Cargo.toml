@@ -1,0 +1,17 @@
+[package]
+name = "uqt-app"
+description = "UsageQuotaTray: composition root, the only crate that names Assistant modules"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "usagequotatray"
+path = "src/main.rs"
+
+[dependencies]
+uqt-core.workspace = true
+uqt-ui.workspace = true
+uqt-assistant-fake.workspace = true
+log.workspace = true
