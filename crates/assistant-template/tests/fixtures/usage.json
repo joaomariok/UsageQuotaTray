@@ -1,0 +1,11 @@
+{
+  "meters": {
+    "requests": {
+      "used": 120,
+      "limit": 500,
+      "resets_at": 1793283600,
+      "by_model": {"small": 70, "large": 30}
+    },
+    "burst_credits": {"used": 3, "limit": 10, "resets_at": 1793283600}
+  }
+}

@@ -4774,6 +4774,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "uqt-assistant-template"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "serde_json",
+ "uqt-core",
+]
+
+[[package]]
 name = "uqt-core"
 version = "0.1.0"
 dependencies = [

@@ -5,6 +5,7 @@ members = [
     "crates/ui",
     "crates/assistant-fake",
     "crates/assistant-anthropic",
+    "crates/assistant-template",
     "crates/app",
 ]
 # Phase 0 spikes and prototypes keep their own lockfiles.
