@@ -5,7 +5,8 @@
 # -Churn: sets UQT_ICON_CHURN=1 (icon redrawn every 500 ms) and samples at 5 s and at
 # -Seconds, to expose GDI/USER leaks.
 # The app runs with the Fake Assistant and a throwaway LOCALAPPDATA, so the real app-data
-# folder is never touched.
+# folder is never touched, and with UQT_NOTIFICATIONS=off, so it neither registers the
+# notification identity in the registry nor shows toasts.
 param(
     [Parameter(Mandatory)][string]$Exe,
     [string]$Name = 'usagequotatray',
@@ -52,6 +53,7 @@ $saved = @{ LOCALAPPDATA = $env:LOCALAPPDATA }
 $env:LOCALAPPDATA = $sandbox
 $env:UQT_FAKE_ASSISTANT = '1'
 $env:UQT_READY_FILE = $ready
+$env:UQT_NOTIFICATIONS = 'off'
 if ($Churn) { $env:UQT_ICON_CHURN = '1' } else { Remove-Item Env:UQT_ICON_CHURN -ErrorAction SilentlyContinue }
 
 $clock = [Diagnostics.Stopwatch]::StartNew()
@@ -91,7 +93,7 @@ try {
     }
 } finally {
     Get-Tree $root.Id | Stop-Process -Force -ErrorAction SilentlyContinue
-    Remove-Item Env:UQT_READY_FILE, Env:UQT_ICON_CHURN, Env:UQT_FAKE_ASSISTANT -ErrorAction SilentlyContinue
+    Remove-Item Env:UQT_READY_FILE, Env:UQT_ICON_CHURN, Env:UQT_FAKE_ASSISTANT, Env:UQT_NOTIFICATIONS -ErrorAction SilentlyContinue
     Start-Sleep -Milliseconds 300
     Remove-Item $sandbox -Recurse -Force -ErrorAction SilentlyContinue
 }

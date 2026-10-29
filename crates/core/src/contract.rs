@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use crate::http::HostClient;
 use crate::model::{AccountInfo, BadgeSpec, Exactness, MeterKey, MeterValue, Notice};
+use crate::settings::ModuleValues;
 use crate::time::Timestamp;
 
 /// One Assistant module.
@@ -19,8 +20,36 @@ pub trait Assistant: Send {
     fn suggested_featured(&self) -> Vec<MeterKey>;
     /// The maker's usage page, if any.
     fn usage_page(&self) -> Option<&str>;
+    /// The module's own settings, rendered by the settings window.
+    fn settings_fields(&self) -> Vec<SettingField> {
+        Vec::new()
+    }
+    /// The user's values for [`Assistant::settings_fields`]; keys the user never set are
+    /// absent. Called before the first discovery and after every settings change.
+    fn configure(&mut self, _values: &ModuleValues) {}
     fn discover_accounts(&mut self) -> Vec<AccountInfo>;
     fn sources(&mut self, account: &AccountInfo) -> Vec<Box<dyn Source>>;
+}
+
+/// One entry of a module's settings description.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SettingField {
+    /// Stable key the value is stored under.
+    pub key: &'static str,
+    pub label: String,
+    pub help: Option<String>,
+    pub kind: FieldKind,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FieldKind {
+    Toggle {
+        default: bool,
+    },
+    Text {
+        default: String,
+        placeholder: String,
+    },
 }
 
 /// Polling intervals a Source declares.

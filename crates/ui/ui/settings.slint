@@ -1,0 +1,277 @@
+// The settings window: Assistants (Accounts, Featured Meters, thresholds, module
+// settings), Alerts (polling, reset notifications, Start with Windows), About (removal).
+// Rows come pre-built from Rust (present/settings.rs); this file only lays them out.
+// Fluent style; follows the system light or dark theme.
+
+import { TabWidget, CheckBox, LineEdit, Button, ComboBox, Switch, ScrollView, Palette } from "std-widgets.slint";
+
+export struct SettingRowData {
+    // 0 Assistant switch, 1 Account switch, 2 Meter (Featured checkbox and thresholds),
+    // 3 module setting switch, 4 module setting text, 5 note
+    kind: int,
+    label: string,
+    detail: string,
+    checked: bool,
+    enabled: bool,
+    editable: bool,
+    text: string,
+    placeholder: string,
+}
+
+component Caption inherits Text {
+    color: Palette.foreground;
+    opacity: 0.7;
+    font-size: 12px;
+    wrap: word-wrap;
+}
+
+export component SettingsWindow inherits Window {
+    in property <[SettingRowData]> rows;
+    in property <[string]> poll-options;
+    in property <int> poll-index;
+    in property <string> poll-warning;
+    in property <bool> reset-notifications;
+    in property <bool> start-with-windows;
+    in property <string> data-folder;
+    in property <string> version;
+    callback row-toggled(int, bool);
+    callback row-edited(int, string);
+    callback row-accepted(int, string);
+    callback poll-selected(int);
+    callback reset-notifications-toggled(bool);
+    callback start-with-windows-toggled(bool);
+    callback remove-requested(bool);
+
+    title: "UsageQuotaTray settings";
+    preferred-width: 600px;
+    preferred-height: 580px;
+    min-width: 460px;
+    min-height: 380px;
+    background: Palette.background;
+    default-font-family: "Segoe UI Variable Text";
+
+    TabWidget {
+        Tab {
+            title: "Assistants";
+            ScrollView {
+                VerticalLayout {
+                    padding: 16px;
+                    spacing: 6px;
+                    alignment: start;
+                    for row[i] in root.rows: VerticalLayout {
+                        if row.kind == 0: HorizontalLayout {
+                            padding-top: 10px;
+                            spacing: 12px;
+                            Text {
+                                text: row.label;
+                                color: Palette.foreground;
+                                font-size: 16px;
+                                font-weight: 600;
+                                vertical-alignment: center;
+                                horizontal-stretch: 1;
+                                overflow: elide;
+                            }
+                            Switch {
+                                checked: row.checked;
+                                accessible-label: row.label;
+                                toggled => {
+                                    root.row-toggled(i, self.checked);
+                                }
+                            }
+                        }
+                        if row.kind == 1: VerticalLayout {
+                            padding-left: 12px;
+                            padding-top: 4px;
+                            spacing: 2px;
+                            HorizontalLayout {
+                                spacing: 12px;
+                                Text {
+                                    text: row.label;
+                                    color: Palette.foreground;
+                                    font-size: 14px;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                    overflow: elide;
+                                }
+                                Switch {
+                                    checked: row.checked;
+                                    accessible-label: row.label;
+                                    toggled => {
+                                        root.row-toggled(i, self.checked);
+                                    }
+                                }
+                            }
+                            if row.checked: Caption {
+                                text: row.detail;
+                            }
+                        }
+                        if row.kind == 2: HorizontalLayout {
+                            padding-left: 24px;
+                            spacing: 12px;
+                            CheckBox {
+                                text: row.label;
+                                checked: row.checked;
+                                enabled: row.enabled;
+                                horizontal-stretch: 1;
+                                toggled => {
+                                    root.row-toggled(i, self.checked);
+                                }
+                            }
+                            if row.editable: LineEdit {
+                                width: 140px;
+                                text: row.text;
+                                placeholder-text: row.placeholder;
+                                accessible-label: "Alert thresholds for " + row.label;
+                                edited(t) => {
+                                    root.row-edited(i, t);
+                                }
+                                accepted(t) => {
+                                    root.row-accepted(i, t);
+                                }
+                            }
+                            if !row.editable: Caption {
+                                width: 140px;
+                                text: row.detail;
+                                vertical-alignment: center;
+                            }
+                        }
+                        if row.kind == 3: VerticalLayout {
+                            padding-left: 12px;
+                            padding-top: 6px;
+                            HorizontalLayout {
+                                spacing: 12px;
+                                Text {
+                                    text: row.label;
+                                    color: Palette.foreground;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                    wrap: word-wrap;
+                                }
+                                Switch {
+                                    checked: row.checked;
+                                    accessible-label: row.label;
+                                    toggled => {
+                                        root.row-toggled(i, self.checked);
+                                    }
+                                }
+                            }
+                            if row.detail != "": Caption {
+                                text: row.detail;
+                            }
+                        }
+                        if row.kind == 4: VerticalLayout {
+                            padding-left: 12px;
+                            padding-top: 6px;
+                            spacing: 4px;
+                            Text {
+                                text: row.label;
+                                color: Palette.foreground;
+                            }
+                            LineEdit {
+                                text: row.text;
+                                placeholder-text: row.placeholder;
+                                accessible-label: row.label;
+                                edited(t) => {
+                                    root.row-edited(i, t);
+                                }
+                                accepted(t) => {
+                                    root.row-accepted(i, t);
+                                }
+                            }
+                            if row.detail != "": Caption {
+                                text: row.detail;
+                            }
+                        }
+                        if row.kind == 5: HorizontalLayout {
+                            padding-left: 12px;
+                            Caption {
+                                text: row.label;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Tab {
+            title: "Alerts";
+            VerticalLayout {
+                padding: 16px;
+                spacing: 12px;
+                alignment: start;
+                Text {
+                    text: "Polling while you are at this PC";
+                    color: Palette.foreground;
+                    font-weight: 600;
+                }
+                ComboBox {
+                    model: root.poll-options;
+                    current-index: root.poll-index;
+                    accessible-label: "Polling while you are at this PC";
+                    selected => {
+                        root.poll-selected(self.current-index);
+                    }
+                }
+                if root.poll-warning != "": Caption {
+                    text: root.poll-warning;
+                }
+                Caption {
+                    text: "Alerts fire at 75%, 90% and 100% of each limit unless a Meter sets its own thresholds on the Assistants page.";
+                }
+                Switch {
+                    text: "Notify when a window resets";
+                    checked: root.reset-notifications;
+                    toggled => {
+                        root.reset-notifications-toggled(self.checked);
+                    }
+                }
+                Caption {
+                    text: "Only for windows that had reached the first threshold.";
+                }
+                Switch {
+                    text: "Start with Windows";
+                    checked: root.start-with-windows;
+                    toggled => {
+                        root.start-with-windows-toggled(self.checked);
+                    }
+                }
+            }
+        }
+
+        Tab {
+            title: "About";
+            VerticalLayout {
+                padding: 16px;
+                spacing: 12px;
+                alignment: start;
+                Text {
+                    text: "UsageQuotaTray " + root.version;
+                    color: Palette.foreground;
+                    font-size: 20px;
+                    font-weight: 600;
+                }
+                Caption {
+                    text: "Settings, logs and Badge overrides are in " + root.data-folder;
+                }
+                Text {
+                    text: "Remove UsageQuotaTray from this PC";
+                    color: Palette.foreground;
+                    font-weight: 600;
+                }
+                Caption {
+                    text: "Deletes the Start with Windows entry and the notification registration, then quits. Delete the app's folder afterwards to remove it completely.";
+                }
+                delete-data := CheckBox {
+                    text: "Also delete settings and logs";
+                }
+                Button {
+                    text: "Remove UsageQuotaTray from this PC\u{2026}";
+                    clicked => {
+                        root.remove-requested(delete-data.checked);
+                    }
+                }
+            }
+        }
+    }
+}

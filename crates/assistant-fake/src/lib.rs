@@ -10,9 +10,12 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
-use uqt_core::contract::{Assistant, FetchContext, FetchError, FetchOutput, Intervals, Source};
+use uqt_core::contract::{
+    Assistant, FetchContext, FetchError, FetchOutput, FieldKind, Intervals, SettingField, Source,
+};
 use uqt_core::engine::minutes;
 use uqt_core::model::{AccountInfo, BadgeSpec, Exactness, MeterKey, MeterValue, Unit, Window};
+use uqt_core::settings::{ModuleValues, SettingValue};
 use uqt_core::time::{Timestamp, days_from_civil};
 
 pub const ID: &str = "fake";
@@ -30,6 +33,14 @@ pub mod sources {
     /// Estimate, every 2 minutes while active.
     pub const LOCAL: &str = "fake-local";
 }
+
+/// Keys of the module's settings.
+pub mod settings_keys {
+    /// Text: the demo Account's display name.
+    pub const ACCOUNT_NAME: &str = "account_name";
+}
+
+const DEFAULT_ACCOUNT_NAME: &str = "Demo account";
 
 pub const BADGE_SVG: &str = include_str!("../badge.svg");
 
@@ -99,6 +110,7 @@ impl FakeControl {
 
 pub struct FakeAssistant {
     control: FakeControl,
+    account_name: String,
 }
 
 impl FakeAssistant {
@@ -107,7 +119,10 @@ impl FakeAssistant {
     }
 
     pub fn with_control(control: FakeControl) -> Self {
-        Self { control }
+        Self {
+            control,
+            account_name: DEFAULT_ACCOUNT_NAME.into(),
+        }
     }
 }
 
@@ -146,10 +161,29 @@ impl Assistant for FakeAssistant {
         None
     }
 
+    fn settings_fields(&self) -> Vec<SettingField> {
+        vec![SettingField {
+            key: settings_keys::ACCOUNT_NAME,
+            label: "Demo account name".into(),
+            help: Some("Shown in the popup and the tooltip.".into()),
+            kind: FieldKind::Text {
+                default: DEFAULT_ACCOUNT_NAME.into(),
+                placeholder: DEFAULT_ACCOUNT_NAME.into(),
+            },
+        }]
+    }
+
+    fn configure(&mut self, values: &ModuleValues) {
+        self.account_name = match values.get(settings_keys::ACCOUNT_NAME) {
+            Some(SettingValue::Text(t)) if !t.trim().is_empty() => t.trim().to_string(),
+            _ => DEFAULT_ACCOUNT_NAME.into(),
+        };
+    }
+
     fn discover_accounts(&mut self) -> Vec<AccountInfo> {
         vec![AccountInfo {
             id: "fake-demo".into(),
-            display_name: "Demo account".into(),
+            display_name: self.account_name.clone(),
         }]
     }
 

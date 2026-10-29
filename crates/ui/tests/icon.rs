@@ -1,7 +1,33 @@
 //! The runtime-rendered tray icon: rings with color bands around the Badge.
 
-use uqt_ui::icon::{IconStyle, render_rgba};
+use uqt_ui::icon::{IconStyle, app_icon_png, render_icon, render_rgba};
 use uqt_ui::present::{Ring, Tone};
+
+#[test]
+fn the_notification_icon_is_a_png() {
+    let png = app_icon_png(64).expect("png");
+    assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+}
+
+#[test]
+fn the_dot_marks_the_top_right_corner_in_red() {
+    let size = 32;
+    let rings = [ring(0.3, Tone::Green)];
+    let with_dot = render_icon(size, &rings, BADGE, IconStyle::DarkTaskbar, true);
+    let corner = pixel(&with_dot, size, size - 4, 3);
+    assert_eq!(corner[3], 255);
+    assert!(
+        corner[0] > 180 && corner[1] < 100 && corner[2] < 100,
+        "{corner:?}"
+    );
+
+    let without = render_icon(size, &rings, BADGE, IconStyle::DarkTaskbar, false);
+    assert_eq!(pixel(&without, size, size - 4, 3)[3], 0);
+    assert_eq!(
+        without,
+        render_rgba(size, &rings, BADGE, IconStyle::DarkTaskbar)
+    );
+}
 
 const BADGE: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="#7A5AF8" d="M8 8h8v8H8z"/></svg>"##;
 

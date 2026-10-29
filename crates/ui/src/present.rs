@@ -1,8 +1,11 @@
 //! Pure mapping from engine state to what the tray icon, tooltip and popup show.
 //! No Slint and no Win32 here, so all of it is tested directly.
 
+mod settings;
+
+pub use settings::{Input, RowKind, RowTarget, SettingRow, SettingsView, settings_view};
 use uqt_core::contract::FetchError;
-use uqt_core::engine::{AccountState, EngineState, Freshness, MeterState, Pace};
+use uqt_core::engine::{AccountState, Alert, AlertKind, EngineState, Freshness, MeterState, Pace};
 use uqt_core::model::{BadgeSpec, Exactness, Unit};
 use uqt_core::time::Timestamp;
 
@@ -43,6 +46,8 @@ pub struct TrayView {
     pub rings: Vec<Ring>,
     pub assistant_id: Option<&'static str>,
     pub badge: Option<BadgeSpec>,
+    /// A Meter that is not featured is at 90% or more.
+    pub dot: bool,
     pub tooltip: String,
 }
 
@@ -81,15 +86,53 @@ pub struct MeterRow {
     pub stale: bool,
 }
 
-/// The icon shows the first Account that has Featured Meters. Choosing the most
-/// constrained Account is a later step.
+/// How constrained an Account's Featured Meters are: the highest fresh Used/Limit
+/// (in tenths of a percent, so near-equal values tie), then the soonest projected
+/// exhaustion. Greater is more constrained.
+fn constraint(acc: &AccountState, now: Timestamp) -> Option<(i64, std::cmp::Reverse<i64>)> {
+    let fresh: Vec<&MeterState> = featured(acc)
+        .filter(|m| m.freshness == Freshness::Fresh && m.fraction().is_some())
+        .collect();
+    let highest = fresh
+        .iter()
+        .filter_map(|m| m.fraction())
+        .map(|f| (f * 1000.0).round() as i64)
+        .max()?;
+    let soonest = fresh
+        .iter()
+        .filter_map(|m| match m.pace {
+            Some(Pace::LimitReached) => Some(now.0),
+            Some(Pace::WillHitLimitAt(t)) => Some(t.0),
+            _ => None,
+        })
+        .min()
+        .unwrap_or(i64::MAX);
+    Some((highest, std::cmp::Reverse(soonest)))
+}
+
+/// The icon shows the Featured Meters of the most constrained Account; with nothing
+/// fresh anywhere, the first Account that has Featured Meters.
 pub fn tray(state: &EngineState, at: Moment) -> TrayView {
-    let shown = state.assistants.iter().find_map(|a| {
-        a.accounts
-            .iter()
-            .find(|acc| featured(acc).next().is_some())
-            .map(|acc| (a, acc))
-    });
+    let candidates = || {
+        state.assistants.iter().flat_map(|a| {
+            a.accounts
+                .iter()
+                .filter(|acc| featured(acc).next().is_some())
+                .map(move |acc| (a, acc))
+        })
+    };
+    let mut shown = None;
+    let mut best = None;
+    for (a, acc) in candidates() {
+        // Strictly greater, so earlier Accounts win exact ties.
+        if let Some(c) = constraint(acc, at.now)
+            && best.as_ref().is_none_or(|b| c > *b)
+        {
+            best = Some(c);
+            shown = Some((a, acc));
+        }
+    }
+    let shown = shown.or_else(|| candidates().next());
     let rings = shown.map_or_else(Vec::new, |(_, acc)| {
         featured(acc)
             .filter_map(|m| {
@@ -112,12 +155,69 @@ pub fn tray(state: &EngineState, at: Moment) -> TrayView {
             .take(2)
             .collect()
     });
+    let dot = state
+        .assistants
+        .iter()
+        .flat_map(|a| &a.accounts)
+        .any(|acc| {
+            acc.meters.iter().any(|m| {
+                !acc.featured.contains(&m.key)
+                    && m.freshness != Freshness::PastReset
+                    && m.fraction().is_some_and(|f| f >= RED_FROM)
+            })
+        });
     TrayView {
         rings,
         assistant_id: shown.map(|(a, _)| a.id),
         badge: shown.map(|(a, _)| a.badge),
+        dot,
         tooltip: tooltip(state, at),
     }
+}
+
+/// A toast's text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AlertMessage {
+    pub title: String,
+    pub body: String,
+}
+
+pub fn alert_message(alert: &Alert, at: Moment) -> AlertMessage {
+    let mut body = format!("{} \u{b7} {}", alert.assistant_name, alert.account_name);
+    let title = match alert.kind {
+        AlertKind::Threshold {
+            percent,
+            used_fraction,
+        } => {
+            if let Some(end) = alert.window_end {
+                body.push_str(&format!(" \u{b7} {}", countdown(end, at)));
+            }
+            if percent >= 100 {
+                format!("{} limit reached", alert.meter_label)
+            } else {
+                format!("{} at {}", alert.meter_label, self::percent(used_fraction))
+            }
+        }
+        AlertKind::Reset => format!("{} has reset", alert.meter_label),
+    };
+    AlertMessage { title, body }
+}
+
+/// The toast's XML for the Windows notification API (generic template, no actions).
+pub fn toast_xml(m: &AlertMessage) -> String {
+    let escape = |s: &str| {
+        s.replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;")
+            .replace('\'', "&apos;")
+    };
+    format!(
+        "<toast launch=\"open-popup\"><visual><binding template=\"ToastGeneric\">\
+         <text>{}</text><text>{}</text></binding></visual></toast>",
+        escape(&m.title),
+        escape(&m.body)
+    )
 }
 
 fn featured(acc: &AccountState) -> impl Iterator<Item = &MeterState> {

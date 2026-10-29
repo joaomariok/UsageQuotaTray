@@ -1,12 +1,16 @@
 //! The engine: runs every Source of every Account on its schedule, keeps the newest
 //! Reading per Source and Meter, and publishes the selected per-Account state.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::contract::{Assistant, FetchContext, FetchError, Source};
+use crate::alerts::AlertMemory;
+pub use crate::alerts::{Alert, AlertKind};
+use crate::contract::{Assistant, FetchContext, FetchError, SettingField, Source};
 use crate::http::{HostClient, Transport};
 use crate::model::{AccountInfo, BadgeSpec, Exactness, MeterKey, Notice, Reading, Unit, Window};
+use crate::settings::Settings;
 use crate::time::{Clock, Timestamp};
 
 const MINUTE: i64 = 60;
@@ -144,24 +148,32 @@ enum Hold {
     Hard,
 }
 
+/// What the schedule depends on besides each Source's own intervals.
+#[derive(Clone, Copy)]
+struct Pacing {
+    presence: Presence,
+    /// The user's active-interval override.
+    active_override: Option<Duration>,
+}
+
 impl SourceRun {
-    fn interval(&self, presence: Presence) -> i64 {
+    fn interval(&self, pacing: Pacing) -> i64 {
         let i = self.source.intervals();
-        let d = match presence {
-            Presence::Active => i.active,
+        let d = match pacing.presence {
+            Presence::Active => pacing.active_override.unwrap_or(i.active),
             Presence::Idle | Presence::Paused => i.idle,
         };
         d.as_secs() as i64
     }
 
-    fn freshness_limit(&self, presence: Presence) -> i64 {
+    fn freshness_limit(&self, pacing: Pacing) -> i64 {
         self.source
             .freshness_limit()
-            .map_or(2 * self.interval(presence), |d| d.as_secs() as i64)
+            .map_or(2 * self.interval(pacing), |d| d.as_secs() as i64)
     }
 
-    fn due_at(&self, presence: Presence) -> Option<Timestamp> {
-        if presence == Presence::Paused {
+    fn due_at(&self, pacing: Pacing) -> Option<Timestamp> {
+        if pacing.presence == Presence::Paused {
             return None;
         }
         let Some(last) = self.last_attempt else {
@@ -169,7 +181,7 @@ impl SourceRun {
         };
         let scheduled = match self.retry_at {
             Some((at, _)) => at,
-            None => last.plus_secs(self.interval(presence)),
+            None => last.plus_secs(self.interval(pacing)),
         };
         let forced = self.forced.and_then(|(at, reason)| match self.retry_at {
             Some((_, Hold::Hard)) => None,
@@ -187,6 +199,7 @@ struct AccountRun {
     readings: Vec<Reading>,
     /// Meter keys in order of first appearance.
     order: Vec<MeterKey>,
+    alerts: HashMap<MeterKey, AlertMemory>,
 }
 
 struct AssistantRun {
@@ -195,24 +208,75 @@ struct AssistantRun {
     accounts: Vec<AccountRun>,
 }
 
+impl AssistantRun {
+    fn enabled(&self, settings: &Settings) -> bool {
+        settings.assistant_enabled(self.module.id())
+    }
+
+    /// The enabled Accounts of an enabled Assistant.
+    fn running<'a>(&'a self, settings: &'a Settings) -> impl Iterator<Item = &'a AccountRun> {
+        let on = self.enabled(settings);
+        let id = self.module.id();
+        self.accounts
+            .iter()
+            .filter(move |acc| on && settings.account_enabled(id, &acc.info.id))
+    }
+}
+
+/// Every module compiled in, with its Accounts, whether enabled or not: what the
+/// settings window lists.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Catalog {
+    pub assistants: Vec<CatalogAssistant>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CatalogAssistant {
+    pub id: &'static str,
+    pub display_name: String,
+    pub enabled: bool,
+    pub fields: Vec<SettingField>,
+    pub accounts: Vec<CatalogAccount>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CatalogAccount {
+    pub id: String,
+    pub display_name: String,
+    pub enabled: bool,
+}
+
 pub struct Engine {
     assistants: Vec<AssistantRun>,
     clock: Arc<dyn Clock>,
     presence: Presence,
     last_forced: Option<Timestamp>,
+    settings: Settings,
+    pending_alerts: Vec<Alert>,
 }
 
 impl Engine {
-    /// Discovers every module's Accounts and their Sources. Nothing is fetched until
-    /// the first [`Engine::tick`].
+    /// [`Engine::with_settings`] with the default settings.
     pub fn new(
         modules: Vec<Box<dyn Assistant>>,
         clock: Arc<dyn Clock>,
         transport: Arc<dyn Transport>,
     ) -> Self {
+        Self::with_settings(modules, clock, transport, &Settings::default())
+    }
+
+    /// Configures every module with the user's values, then discovers its Accounts and
+    /// their Sources. Nothing is fetched until the first [`Engine::tick`].
+    pub fn with_settings(
+        modules: Vec<Box<dyn Assistant>>,
+        clock: Arc<dyn Clock>,
+        transport: Arc<dyn Transport>,
+        settings: &Settings,
+    ) -> Self {
         let assistants = modules
             .into_iter()
             .map(|mut module| {
+                module.configure(&settings.module_values(module.id()));
                 let http = HostClient::new(module.allowed_hosts(), transport.clone());
                 let accounts = module
                     .discover_accounts()
@@ -237,6 +301,7 @@ impl Engine {
                             sources,
                             readings: Vec::new(),
                             order: Vec::new(),
+                            alerts: HashMap::new(),
                         }
                     })
                     .collect();
@@ -252,11 +317,107 @@ impl Engine {
             clock,
             presence: Presence::Active,
             last_forced: None,
+            settings: settings.clone(),
+            pending_alerts: Vec::new(),
+        }
+    }
+
+    /// Alerts raised by ticks since the last call, oldest first.
+    pub fn take_alerts(&mut self) -> Vec<Alert> {
+        std::mem::take(&mut self.pending_alerts)
+    }
+
+    /// Checks every Meter of every running Account against its thresholds.
+    fn evaluate_alerts(&mut self, now: Timestamp) {
+        let pacing = self.pacing();
+        let settings = &self.settings;
+        for a in &mut self.assistants {
+            let id = a.module.id();
+            if !settings.assistant_enabled(id) {
+                continue;
+            }
+            for acc in &mut a.accounts {
+                if !settings.account_enabled(id, &acc.info.id) {
+                    continue;
+                }
+                let state = account_state(acc, &[], now, pacing);
+                for m in &state.meters {
+                    let thresholds = settings.thresholds(id, &acc.info.id, &m.key);
+                    let kinds = acc.alerts.entry(m.key.clone()).or_default().observe(
+                        m,
+                        &thresholds,
+                        settings.reset_notifications,
+                    );
+                    self.pending_alerts
+                        .extend(kinds.into_iter().map(|kind| Alert {
+                            assistant_id: id,
+                            assistant_name: a.module.display_name().to_string(),
+                            account_id: acc.info.id.clone(),
+                            account_name: acc.info.display_name.clone(),
+                            meter_key: m.key.clone(),
+                            meter_label: m.label.clone(),
+                            window_end: m.window.map(|w| w.end),
+                            kind,
+                        }));
+                }
+            }
         }
     }
 
     pub fn presence(&self) -> Presence {
         self.presence
+    }
+
+    /// Takes the user's new settings into account from now on. Module values reach the
+    /// modules at once; Accounts are not rediscovered until the next start.
+    pub fn apply_settings(&mut self, settings: &Settings) {
+        for a in &mut self.assistants {
+            let id = a.module.id();
+            let values = settings.module_values(id);
+            if values != self.settings.module_values(id) {
+                a.module.configure(&values);
+            }
+        }
+        self.settings = settings.clone();
+    }
+
+    pub fn settings(&self) -> &Settings {
+        &self.settings
+    }
+
+    /// Every module and Account, enabled or not.
+    pub fn catalog(&self) -> Catalog {
+        Catalog {
+            assistants: self
+                .assistants
+                .iter()
+                .map(|a| {
+                    let id = a.module.id();
+                    CatalogAssistant {
+                        id,
+                        display_name: a.module.display_name().to_string(),
+                        enabled: a.enabled(&self.settings),
+                        fields: a.module.settings_fields(),
+                        accounts: a
+                            .accounts
+                            .iter()
+                            .map(|acc| CatalogAccount {
+                                id: acc.info.id.clone(),
+                                display_name: acc.info.display_name.clone(),
+                                enabled: self.settings.account_enabled(id, &acc.info.id),
+                            })
+                            .collect(),
+                    }
+                })
+                .collect(),
+        }
+    }
+
+    fn pacing(&self) -> Pacing {
+        Pacing {
+            presence: self.presence,
+            active_override: self.settings.active_poll,
+        }
     }
 
     pub fn set_presence(&mut self, presence: Presence) {
@@ -283,11 +444,12 @@ impl Engine {
     /// When the next Source is due, or `None` while paused.
     pub fn next_wake(&self) -> Option<Timestamp> {
         let now = self.clock.now();
+        let pacing = self.pacing();
         self.assistants
             .iter()
-            .flat_map(|a| &a.accounts)
+            .flat_map(|a| a.running(&self.settings))
             .flat_map(|acc| &acc.sources)
-            .filter_map(|s| s.due_at(self.presence))
+            .filter_map(|s| s.due_at(pacing))
             .min()
             .map(|t| t.max(now))
     }
@@ -295,16 +457,24 @@ impl Engine {
     /// Fetches every due Source. Returns whether anything was attempted.
     pub fn tick(&mut self) -> bool {
         let now = self.clock.now();
-        let presence = self.presence;
+        let pacing = self.pacing();
+        let settings = &self.settings;
         let mut attempted = false;
         for assistant in &mut self.assistants {
+            let id = assistant.module.id();
+            if !settings.assistant_enabled(id) {
+                continue;
+            }
             let ctx = FetchContext {
                 now,
                 http: &assistant.http,
             };
             for account in &mut assistant.accounts {
+                if !settings.account_enabled(id, &account.info.id) {
+                    continue;
+                }
                 for run in &mut account.sources {
-                    if run.due_at(presence).is_none_or(|due| due > now) {
+                    if run.due_at(pacing).is_none_or(|due| due > now) {
                         continue;
                     }
                     attempted = true;
@@ -354,27 +524,36 @@ impl Engine {
                 }
             }
         }
+        self.evaluate_alerts(now);
         attempted
     }
 
     /// The published state at the clock's current time.
     pub fn state(&self) -> EngineState {
         let now = self.clock.now();
+        let pacing = self.pacing();
         let assistants = self
             .assistants
             .iter()
-            .map(|a| AssistantState {
-                id: a.module.id(),
-                display_name: a.module.display_name().to_string(),
-                badge: a.module.badge(),
-                usage_page: a.module.usage_page().map(str::to_string),
-                accounts: a
-                    .accounts
-                    .iter()
-                    .map(|acc| {
-                        account_state(acc, &a.module.suggested_featured(), now, self.presence)
-                    })
-                    .collect(),
+            .filter(|a| a.enabled(&self.settings))
+            .map(|a| {
+                let id = a.module.id();
+                AssistantState {
+                    id,
+                    display_name: a.module.display_name().to_string(),
+                    badge: a.module.badge(),
+                    usage_page: a.module.usage_page().map(str::to_string),
+                    accounts: a
+                        .running(&self.settings)
+                        .map(|acc| {
+                            let featured = self
+                                .settings
+                                .featured(id, &acc.info.id)
+                                .unwrap_or_else(|| a.module.suggested_featured());
+                            account_state(acc, &featured, now, pacing)
+                        })
+                        .collect(),
+                }
             })
             .collect();
         EngineState { now, assistants }
@@ -409,7 +588,7 @@ fn account_state(
     acc: &AccountRun,
     featured: &[MeterKey],
     now: Timestamp,
-    presence: Presence,
+    pacing: Pacing,
 ) -> AccountState {
     let rank = |r: &Reading| {
         acc.sources
@@ -422,7 +601,7 @@ fn account_state(
             .sources
             .iter()
             .find(|s| s.source.id() == r.source_id)
-            .map_or(0, |s| s.freshness_limit(presence));
+            .map_or(0, |s| s.freshness_limit(pacing));
         now.0 - r.fetched_at.0 <= limit
     };
     let meters = acc

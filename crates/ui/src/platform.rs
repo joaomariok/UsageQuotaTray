@@ -13,10 +13,11 @@ use windows::Win32::UI::HiDpi::{
     SetProcessDpiAwarenessContext,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetForegroundWindow, SM_CXSMICON, SPI_GETWORKAREA, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
+    GetForegroundWindow, IDYES, MB_DEFBUTTON2, MB_ICONERROR, MB_ICONWARNING, MB_OK, MB_YESNO,
+    MessageBoxW, SM_CXSMICON, SPI_GETWORKAREA, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
     SetForegroundWindow, SystemParametersInfoW,
 };
-use windows::core::{PCWSTR, w};
+use windows::core::{HSTRING, PCWSTR, w};
 
 const PERSONALIZE: PCWSTR = w!("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize");
 
@@ -133,6 +134,32 @@ pub fn apply_flyout_style(hwnd: HWND, dark: bool) -> bool {
     dwm_set(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND);
     dwm_set(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, i32::from(dark));
     dwm_set(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, DWMSBT_TRANSIENTWINDOW)
+}
+
+/// A dark title bar for a framed window when the apps theme is dark.
+pub fn set_dark_title_bar(hwnd: HWND, dark: bool) {
+    dwm_set(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, i32::from(dark));
+}
+
+/// A Yes/No question; true for Yes.
+pub fn confirm(owner: Option<HWND>, title: &str, text: &str) -> bool {
+    let (title, text) = (HSTRING::from(title), HSTRING::from(text));
+    unsafe {
+        MessageBoxW(
+            owner,
+            &text,
+            &title,
+            MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2,
+        ) == IDYES
+    }
+}
+
+/// An error the user should see.
+pub fn show_error(owner: Option<HWND>, title: &str, text: &str) {
+    let (title, text) = (HSTRING::from(title), HSTRING::from(text));
+    unsafe {
+        MessageBoxW(owner, &text, &title, MB_OK | MB_ICONERROR);
+    }
 }
 
 pub fn is_foreground(hwnd: HWND) -> bool {

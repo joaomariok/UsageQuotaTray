@@ -1,19 +1,30 @@
 //! The scheduler thread. It owns the [`Engine`], performs blocking fetches, sleeps
-//! until the next Source is due or a command arrives, and publishes the state after
-//! every wake. No async runtime.
+//! until the next Source is due or a command arrives, and publishes an [`Update`]
+//! after every wake. No async runtime.
 
 use std::sync::Arc;
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use crate::engine::{Engine, EngineState, Presence, RefreshReason};
+use crate::engine::{Alert, Catalog, Engine, EngineState, Presence, RefreshReason};
+use crate::settings::Settings;
 use crate::time::Clock;
 
 enum Command {
     Refresh(RefreshReason),
     Presence(Presence),
+    Settings(Box<Settings>),
     Shutdown,
+}
+
+/// What the scheduler thread publishes after every wake.
+#[derive(Clone, Debug)]
+pub struct Update {
+    pub state: EngineState,
+    /// Raised since the previous update; each alert is published once.
+    pub alerts: Vec<Alert>,
+    pub catalog: Catalog,
 }
 
 /// Sends commands to the scheduler thread; cheap to clone, usable from any thread.
@@ -28,6 +39,10 @@ impl EngineHandle {
     pub fn set_presence(&self, presence: Presence) {
         let _ = self.0.send(Command::Presence(presence));
     }
+
+    pub fn apply_settings(&self, settings: Settings) {
+        let _ = self.0.send(Command::Settings(Box::new(settings)));
+    }
 }
 
 pub struct EngineThread {
@@ -39,7 +54,7 @@ impl EngineThread {
     pub fn spawn(
         mut engine: Engine,
         clock: Arc<dyn Clock>,
-        publish: impl Fn(EngineState) + Send + 'static,
+        publish: impl Fn(Update) + Send + 'static,
     ) -> Self {
         let (tx, rx) = mpsc::channel();
         let join = std::thread::Builder::new()
@@ -47,7 +62,11 @@ impl EngineThread {
             .spawn(move || {
                 loop {
                     engine.tick();
-                    publish(engine.state());
+                    publish(Update {
+                        state: engine.state(),
+                        alerts: engine.take_alerts(),
+                        catalog: engine.catalog(),
+                    });
                     let command = match engine.next_wake() {
                         Some(at) => {
                             let secs = (at.0 - clock.now().0).max(1) as u64;
@@ -58,6 +77,7 @@ impl EngineThread {
                     match command {
                         Ok(Command::Refresh(reason)) => engine.request_refresh(reason),
                         Ok(Command::Presence(p)) => engine.set_presence(p),
+                        Ok(Command::Settings(s)) => engine.apply_settings(&s),
                         Ok(Command::Shutdown) | Err(RecvTimeoutError::Disconnected) => break,
                         Err(RecvTimeoutError::Timeout) => {}
                     }

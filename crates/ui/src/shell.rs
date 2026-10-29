@@ -10,16 +10,20 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use slint::{ComponentHandle, ModelRc, PhysicalPosition, Timer, TimerMode, VecModel};
-use tray_icon::menu::{Menu, MenuEvent, MenuItem};
+use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
-use uqt_core::engine::{Engine, EngineState, RefreshReason};
-use uqt_core::runner::{EngineHandle, EngineThread};
+use uqt_core::engine::{Alert, Catalog, Engine, EngineState, RefreshReason};
+use uqt_core::runner::{EngineHandle, EngineThread, Update};
+use uqt_core::settings::{Settings, SettingsEdit, SettingsStore};
 use uqt_core::time::Clock;
+use windows::Win32::Foundation::HWND;
 
 use crate::badge::resolve_badge;
-use crate::icon::{IconStyle, render_rgba};
-use crate::present::{self, Moment, PopupView, Ring, Tone, TrayView};
-use crate::{Popup, RowData, platform, session};
+use crate::icon::{IconStyle, app_icon_png, render_icon};
+use crate::lifecycle::{self, Autostart, CurrentUserRegistry};
+use crate::notify::{self, Toasts};
+use crate::present::{self, Moment, PopupView, Ring, SettingsView, Tone, TrayView};
+use crate::{Popup, RowData, platform, session, settings_window};
 
 const POPUP_WIDTH: f32 = 360.0;
 const POPUP_MARGIN: f32 = 12.0;
@@ -36,12 +40,30 @@ pub struct ShellOptions {
     pub ready_file: Option<PathBuf>,
     /// Leak test: redraw the icon every 500 ms with changing rings.
     pub icon_churn: bool,
+    /// The local app-data folder (settings, logs, Badge overrides, notification icon).
+    pub data_dir: Option<PathBuf>,
+    /// The settings the engine started with.
+    pub settings: Settings,
+    /// Where settings changes are saved; `None` keeps them in memory only.
+    pub settings_store: Option<SettingsStore>,
+    /// This exe, for the Start-with-Windows entry.
+    pub exe: Option<PathBuf>,
+    /// Register the notification identity and show toasts. Off for measurement runs,
+    /// which must not write to the registry.
+    pub notifications: bool,
 }
 
 struct Ui {
     popup: slint::Weak<Popup>,
     tray: Option<TrayIcon>,
     state: Option<EngineState>,
+    catalog: Catalog,
+    settings: Settings,
+    store: Option<SettingsStore>,
+    exe: Option<PathBuf>,
+    data_dir: Option<PathBuf>,
+    toasts: Option<Toasts>,
+    autostart_item: CheckMenuItem,
     clock: Arc<dyn Clock>,
     engine: EngineHandle,
     badges_dir: Option<PathBuf>,
@@ -56,6 +78,7 @@ struct Ui {
 struct IconKey {
     rings: Vec<(u32, Tone)>,
     badge: Option<&'static str>,
+    dot: bool,
     size: u32,
     style: IconStyle,
 }
@@ -76,9 +99,9 @@ fn icon_style() -> IconStyle {
     }
 }
 
-fn make_icon(rings: &[Ring], badge_svg: &str) -> Option<tray_icon::Icon> {
+fn make_icon(rings: &[Ring], badge_svg: &str, dot: bool) -> Option<tray_icon::Icon> {
     let size = platform::small_icon_size();
-    let rgba = render_rgba(size, rings, badge_svg, icon_style());
+    let rgba = render_icon(size, rings, badge_svg, icon_style(), dot);
     tray_icon::Icon::from_rgba(rgba, size, size).ok()
 }
 
@@ -113,6 +136,7 @@ fn update_tray(ui: &mut Ui, view: &TrayView) {
             .map(|r| ((r.fraction.clamp(0.0, 1.0) * 1000.0) as u32, r.tone))
             .collect(),
         badge: view.assistant_id,
+        dot: view.dot,
         size: platform::small_icon_size(),
         style: icon_style(),
     };
@@ -128,7 +152,7 @@ fn update_tray(ui: &mut Ui, view: &TrayView) {
                 .clone(),
             _ => String::new(),
         };
-        if let Some(icon) = make_icon(&view.rings, &svg) {
+        if let Some(icon) = make_icon(&view.rings, &svg, view.dot) {
             let _ = tray.set_icon(Some(icon));
             ui.shown_icon = Some(key);
         }
@@ -248,31 +272,203 @@ fn hide_popup(popup: &Popup) {
     with_ui(|ui| ui.was_foreground = false);
 }
 
+thread_local! {
+    static STYLE_TIMER: RefCell<Option<Rc<Timer>>> = const { RefCell::new(None) };
+}
+
+/// Opens the popup unless it is open (a toast click).
+fn open_popup() {
+    let Some(p) = with_ui(|ui| ui.popup.upgrade()).flatten() else {
+        return;
+    };
+    if !p.window().is_visible()
+        && let Some(timer) = STYLE_TIMER.with(|t| t.borrow().clone())
+    {
+        show_popup(&p, &timer);
+    }
+}
+
+/// A new state from the scheduler thread, on the UI thread.
+fn on_update(update: Update) {
+    with_ui(|ui| {
+        ui.state = Some(update.state);
+        ui.catalog = update.catalog;
+    });
+    present_now();
+    for alert in &update.alerts {
+        raise(alert);
+    }
+    settings_window::refresh();
+}
+
+/// Shows an alert as a toast, or as a tray balloon when the toast fails.
+fn raise(alert: &Alert) {
+    with_ui(|ui| {
+        let at = Moment {
+            now: ui.clock.now(),
+            utc_offset_secs: platform::utc_offset_secs(),
+        };
+        let message = present::alert_message(alert, at);
+        log::info!("alert: {} ({})", message.title, alert.meter_key);
+        let Some(toasts) = ui.toasts.as_mut() else {
+            return;
+        };
+        let click = || {
+            let _ = slint::invoke_from_event_loop(open_popup);
+        };
+        if let Err(e) = toasts.show(&message, click) {
+            log::warn!("toast failed ({e}); showing a balloon");
+            if let Some(tray) = &ui.tray {
+                notify::balloon(HWND(tray.window_handle()), &message);
+            }
+        }
+    });
+}
+
+/// Writes the notification icon next to the settings and registers the identity.
+fn register_notification_identity(data_dir: Option<&std::path::Path>) {
+    let Some(dir) = data_dir else { return };
+    let icon = dir.join("notification.png");
+    if let Some(png) = app_icon_png(64)
+        && std::fs::create_dir_all(dir).is_ok()
+        && std::fs::read(&icon).ok().as_deref() != Some(png.as_slice())
+        && let Err(e) = std::fs::write(&icon, png)
+    {
+        log::warn!("could not write the notification icon: {e}");
+    }
+    if let Err(e) = lifecycle::register_notifications(&CurrentUserRegistry, &icon) {
+        log::warn!("could not register the notification identity: {e}");
+    }
+}
+
+/// What the settings window shows now.
+pub(crate) fn settings_view() -> Option<SettingsView> {
+    with_ui(|ui| {
+        let empty = EngineState {
+            now: ui.clock.now(),
+            assistants: Vec::new(),
+        };
+        present::settings_view(
+            &ui.catalog,
+            ui.state.as_ref().unwrap_or(&empty),
+            &ui.settings,
+            autostart_enabled(ui),
+        )
+    })
+}
+
+pub(crate) fn data_folder_text() -> String {
+    with_ui(|ui| ui.data_dir.as_ref().map(|d| d.display().to_string()))
+        .flatten()
+        .unwrap_or_else(|| "(no app-data folder)".into())
+}
+
+fn autostart_enabled(ui: &Ui) -> bool {
+    ui.exe
+        .as_deref()
+        .is_some_and(|exe| Autostart::new(&CurrentUserRegistry, exe).is_enabled())
+}
+
+/// Applies one settings change: saved at once, sent to the engine, shown again.
+pub(crate) fn apply_edit(edit: SettingsEdit) {
+    with_ui(|ui| {
+        ui.settings.apply(edit);
+        if let Some(store) = &ui.store
+            && let Err(e) = store.save(&ui.settings)
+        {
+            log::error!("could not save settings: {e}");
+        }
+        ui.engine.apply_settings(ui.settings.clone());
+    });
+    settings_window::refresh();
+}
+
+/// The Start-with-Windows toggle, from the menu or the settings window.
+pub(crate) fn set_autostart(on: bool) {
+    with_ui(|ui| {
+        if let Some(exe) = ui.exe.as_deref()
+            && let Err(e) = Autostart::new(&CurrentUserRegistry, exe).set(on)
+        {
+            log::error!("could not change Start with Windows: {e}");
+        }
+        ui.autostart_item.set_checked(autostart_enabled(ui));
+    });
+    settings_window::refresh();
+}
+
+/// "Remove UsageQuotaTray from this PC", after the user confirms; then quits.
+pub(crate) fn remove_from_pc(delete_data: bool) {
+    let owner = settings_window::hwnd();
+    let mut text =
+        String::from("This deletes the Start with Windows entry and the notification registration");
+    if delete_data {
+        text.push_str(&format!(" and the folder {}", data_folder_text()));
+    }
+    text.push_str(", then quits UsageQuotaTray.\n\nRemove it now?");
+    if !platform::confirm(owner, "Remove UsageQuotaTray", &text) {
+        return;
+    }
+    let data_dir = with_ui(|ui| ui.data_dir.clone()).flatten();
+    log::info!("removing UsageQuotaTray from this PC (delete data: {delete_data})");
+    if let Err(e) =
+        lifecycle::remove_from_pc(&CurrentUserRegistry, data_dir.as_deref(), delete_data)
+    {
+        platform::show_error(
+            owner,
+            "Remove UsageQuotaTray",
+            &format!("Not everything could be removed: {e}"),
+        );
+    }
+    // Nothing may write settings after this.
+    with_ui(|ui| ui.store = None);
+    let _ = slint::quit_event_loop();
+}
+
 /// Runs the tray app until "Exit". The engine moves to the scheduler thread.
 pub fn run(engine: Engine, clock: Arc<dyn Clock>, options: ShellOptions) -> Result<(), String> {
     platform::set_per_monitor_dpi_awareness();
+    if options.notifications {
+        // Before any window exists, so Windows attributes everything to the identity.
+        notify::set_app_id();
+        register_notification_identity(options.data_dir.as_deref());
+    }
     let popup = Popup::new().map_err(|e| e.to_string())?;
 
+    let autostart_on = options
+        .exe
+        .as_deref()
+        .is_some_and(|exe| Autostart::new(&CurrentUserRegistry, exe).is_enabled());
     let menu = Menu::new();
     let refresh_item = MenuItem::new("Refresh now", true, None);
+    let settings_item = MenuItem::new("Settings\u{2026}", true, None);
+    let autostart_item = CheckMenuItem::new("Start with Windows", true, autostart_on, None);
     let exit_item = MenuItem::new("Exit", true, None);
-    menu.append(&refresh_item).map_err(|e| e.to_string())?;
-    menu.append(&exit_item).map_err(|e| e.to_string())?;
-    let (refresh_id, exit_id) = (refresh_item.id().clone(), exit_item.id().clone());
+    for item in [
+        &refresh_item as &dyn tray_icon::menu::IsMenuItem,
+        &settings_item,
+        &autostart_item,
+        &PredefinedMenuItem::separator(),
+        &exit_item,
+    ] {
+        menu.append(item).map_err(|e| e.to_string())?;
+    }
+    let (refresh_id, settings_id, autostart_id, exit_id) = (
+        refresh_item.id().clone(),
+        settings_item.id().clone(),
+        autostart_item.id().clone(),
+        exit_item.id().clone(),
+    );
 
     let tray = TrayIconBuilder::new()
-        .with_icon(make_icon(&[], "").ok_or("icon")?)
+        .with_icon(make_icon(&[], "", false).ok_or("icon")?)
         .with_tooltip("UsageQuotaTray")
         .with_menu(Box::new(menu))
         .with_menu_on_left_click(false)
         .build()
         .map_err(|e| e.to_string())?;
 
-    let engine_thread = EngineThread::spawn(engine, clock.clone(), |state| {
-        let _ = slint::invoke_from_event_loop(move || {
-            with_ui(|ui| ui.state = Some(state));
-            present_now();
-        });
+    let engine_thread = EngineThread::spawn(engine, clock.clone(), |update| {
+        let _ = slint::invoke_from_event_loop(move || on_update(update));
     });
     let handle = engine_thread.handle();
     session::spawn_presence_monitor(handle.clone());
@@ -282,6 +478,13 @@ pub fn run(engine: Engine, clock: Arc<dyn Clock>, options: ShellOptions) -> Resu
             popup: popup.as_weak(),
             tray: Some(tray),
             state: None,
+            catalog: Catalog::default(),
+            settings: options.settings.clone(),
+            store: options.settings_store.clone(),
+            exe: options.exe.clone(),
+            data_dir: options.data_dir.clone(),
+            toasts: options.notifications.then(Toasts::new),
+            autostart_item,
             clock,
             engine: handle.clone(),
             badges_dir: options.badges_dir.clone(),
@@ -305,7 +508,6 @@ pub fn run(engine: Engine, clock: Arc<dyn Clock>, options: ShellOptions) -> Resu
 
     // Tray and menu events arrive off the UI thread; hop onto it. Rc is not Send, so the
     // style timer is reached through a thread-local.
-    thread_local!(static STYLE_TIMER: RefCell<Option<Rc<Timer>>> = const { RefCell::new(None) });
     STYLE_TIMER.with(|t| *t.borrow_mut() = Some(style_timer.clone()));
     let weak = popup.as_weak();
     TrayIconEvent::set_event_handler(Some(move |e: TrayIconEvent| {
@@ -337,6 +539,14 @@ pub fn run(engine: Engine, clock: Arc<dyn Clock>, options: ShellOptions) -> Resu
     MenuEvent::set_event_handler(Some(move |e: MenuEvent| {
         if e.id == refresh_id {
             menu_engine.refresh(RefreshReason::Manual);
+        } else if e.id == settings_id {
+            let _ = slint::invoke_from_event_loop(settings_window::open);
+        } else if e.id == autostart_id {
+            let _ = slint::invoke_from_event_loop(|| {
+                // The menu toggles its own check mark; follow it.
+                let on = with_ui(|ui| ui.autostart_item.is_checked()).unwrap_or(false);
+                set_autostart(on);
+            });
         } else if e.id == exit_id {
             let _ = slint::invoke_from_event_loop(|| {
                 let _ = slint::quit_event_loop();
@@ -433,7 +643,8 @@ fn measurement_timers(
             ];
             with_ui(|ui| {
                 let svg = ui.badges.values().next().cloned().unwrap_or_default();
-                if let (Some(tray), Some(icon)) = (ui.tray.as_ref(), make_icon(&rings, &svg)) {
+                if let (Some(tray), Some(icon)) = (ui.tray.as_ref(), make_icon(&rings, &svg, false))
+                {
                     let _ = tray.set_icon(Some(icon));
                 }
             });

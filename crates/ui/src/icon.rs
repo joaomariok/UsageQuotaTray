@@ -114,11 +114,74 @@ fn render_pixmap(size: u32, rings: &[Ring], badge_svg: &str, style: IconStyle) -
     pm
 }
 
+/// Marks the top-right corner with a red dot inside a transparent halo, so it reads
+/// on top of the rings on any taskbar.
+fn draw_dot(pm: &mut Pixmap) {
+    let s = pm.width() as f32;
+    let r = (s * 0.2).max(2.5);
+    let (cx, cy) = (s - r - 0.5, r + 0.5);
+    let fill = |pm: &mut Pixmap, radius: f32, paint: &Paint<'_>| {
+        if let Some(c) = PathBuilder::from_circle(cx, cy, radius) {
+            pm.fill_path(
+                &c,
+                paint,
+                resvg::tiny_skia::FillRule::Winding,
+                Transform::identity(),
+                None,
+            );
+        }
+    };
+    let clear = Paint {
+        anti_alias: true,
+        blend_mode: resvg::tiny_skia::BlendMode::Clear,
+        ..Paint::default()
+    };
+    fill(pm, r + 1.0, &clear);
+    let mut red = Paint {
+        anti_alias: true,
+        ..Paint::default()
+    };
+    red.set_color(tone_color(Tone::Red, IconStyle::DarkTaskbar));
+    fill(pm, r, &red);
+}
+
 /// The icon as straight (non-premultiplied) RGBA, `size` x `size`, which is what
 /// `tray-icon` and `CreateIconIndirect` with a 32-bit DIB expect.
 pub fn render_rgba(size: u32, rings: &[Ring], badge_svg: &str, style: IconStyle) -> Vec<u8> {
-    render_pixmap(size, rings, badge_svg, style)
-        .pixels()
+    render_icon(size, rings, badge_svg, style, false)
+}
+
+/// The app's own icon, for the notification identity: two sample rings around the
+/// placeholder, as a PNG.
+pub fn app_icon_png(size: u32) -> Option<Vec<u8>> {
+    let rings = [
+        Ring {
+            fraction: 0.65,
+            tone: Tone::Green,
+        },
+        Ring {
+            fraction: 0.35,
+            tone: Tone::Amber,
+        },
+    ];
+    render_pixmap(size, &rings, "", IconStyle::DarkTaskbar)
+        .encode_png()
+        .ok()
+}
+
+/// [`render_rgba`], with the dot that flags a non-featured Meter at 90% or more.
+pub fn render_icon(
+    size: u32,
+    rings: &[Ring],
+    badge_svg: &str,
+    style: IconStyle,
+    dot: bool,
+) -> Vec<u8> {
+    let mut pm = render_pixmap(size, rings, badge_svg, style);
+    if dot {
+        draw_dot(&mut pm);
+    }
+    pm.pixels()
         .iter()
         .flat_map(|p| {
             let c = p.demultiply();
