@@ -1,0 +1,113 @@
+// A Windows 11 style left navigation list: a vertical tab list with an accent indicator
+// on the selected entry, hover and pressed states, a visible focus ring, and Up / Down /
+// Home / End keys. Tab moves focus in and out as for any control.
+// Where the selection goes after a key is decided in Rust (src/nav.rs, tested).
+
+import { Palette } from "std-widgets.slint";
+
+// Implemented by settings_window.rs; the arguments are (current, count, key code) with
+// key codes 0 Up, 1 Down, 2 Home, 3 End.
+export global NavLogic {
+    pure callback step(int, int, int) -> int;
+}
+
+component NavEntry inherits Rectangle {
+    in property <string> title;
+    in property <int> index;
+    in property <int> count;
+    in property <bool> selected;
+    in property <bool> focused;
+    callback activated();
+
+    height: 40px;
+    border-radius: 6px;
+    background: touch.pressed ? Palette.foreground.with-alpha(0.10)
+        : (root.selected ? Palette.foreground.with-alpha(0.09)
+        : (touch.has-hover ? Palette.foreground.with-alpha(0.05) : transparent));
+
+    accessible-role: tab;
+    accessible-label: root.title;
+    accessible-item-index: root.index;
+    accessible-item-count: root.count;
+    accessible-item-selectable: true;
+    accessible-item-selected: root.selected;
+    accessible-action-default => {
+        root.activated();
+    }
+
+    // Selection indicator.
+    Rectangle {
+        x: 2px;
+        width: 3px;
+        height: 16px;
+        border-radius: 1.5px;
+        background: Palette.accent-background;
+        visible: root.selected;
+    }
+
+    Text {
+        x: 16px;
+        width: parent.width - 24px;
+        height: parent.height;
+        text: root.title;
+        color: Palette.foreground;
+        font-size: 14px;
+        font-weight: root.selected ? 600 : 400;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    // Focus ring, drawn only when the list has keyboard focus.
+    if root.focused && root.selected: Rectangle {
+        border-radius: root.border-radius;
+        border-width: 2px;
+        border-color: Palette.accent-background;
+    }
+
+    touch := TouchArea {
+        clicked => {
+            root.activated();
+        }
+    }
+}
+
+export component NavList inherits Rectangle {
+    in property <[string]> items;
+    in-out property <int> current-index;
+    callback selected(int);
+
+    width: 176px;
+    accessible-role: tab-list;
+    accessible-item-count: root.items.length;
+    accessible-delegate-focus: root.current-index;
+
+    scope := FocusScope {
+        key-pressed(event) => {
+            if (event.text == Key.UpArrow || event.text == Key.DownArrow || event.text == Key.Home || event.text == Key.End) {
+                root.current-index = NavLogic.step(root.current-index, root.items.length,
+                    event.text == Key.UpArrow ? 0 : (event.text == Key.DownArrow ? 1 : (event.text == Key.Home ? 2 : 3)));
+                root.selected(root.current-index);
+                return accept;
+            }
+            reject
+        }
+
+        VerticalLayout {
+            padding: 8px;
+            spacing: 2px;
+            alignment: start;
+            for title[i] in root.items: NavEntry {
+                title: title;
+                index: i;
+                count: root.items.length;
+                selected: i == root.current-index;
+                focused: scope.has-focus;
+                activated => {
+                    root.current-index = i;
+                    root.selected(i);
+                    scope.focus();
+                }
+            }
+        }
+    }
+}

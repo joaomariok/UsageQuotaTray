@@ -9,8 +9,9 @@ use std::time::Duration;
 use slint::{CloseRequestResponse, ComponentHandle, Model, ModelRc, Timer, TimerMode, VecModel};
 use uqt_core::settings::SettingsEdit;
 
+use crate::nav::{NavKey, step};
 use crate::present::{Input, RowKind, SettingRow, SettingsView};
-use crate::{SettingRowData, SettingsWindow, platform, shell};
+use crate::{NavLogic, SettingRowData, SettingsWindow, platform, shell};
 
 /// Typing in a text field applies after this pause (or at once on Enter).
 const TYPING_PAUSE: Duration = Duration::from_millis(900);
@@ -150,6 +151,14 @@ fn apply_pending() {
 }
 
 fn wire(window: &SettingsWindow) {
+    window.global::<NavLogic>().on_step(|current, count, code| {
+        let at = usize::try_from(current).unwrap_or(0);
+        let len = usize::try_from(count).unwrap_or(0);
+        match NavKey::from_code(code) {
+            Some(key) => step(at, len, key) as i32,
+            None => current,
+        }
+    });
     window.on_row_toggled(|i, on| {
         if let Some(edit) = row_edit(i, Input::Toggled(on)) {
             shell::apply_edit(edit);
