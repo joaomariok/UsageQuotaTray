@@ -9,7 +9,7 @@ use uqt_core::engine::{
     Freshness, MeterState,
 };
 use uqt_core::model::{BadgeSpec, Exactness, Unit};
-use uqt_core::settings::{SettingValue, Settings, SettingsEdit};
+use uqt_core::settings::{Gauge, SettingValue, Settings, SettingsEdit};
 use uqt_core::time::Timestamp;
 use uqt_ui::present::{
     ActionRequest, Input, RowKind, RowTarget, SettingRow, SettingsView, settings_view,
@@ -388,4 +388,78 @@ fn the_switches_show_reset_notifications_and_start_with_windows() {
     let v = settings_view(&catalog(true, true), &state(&[]), &s, false);
     assert!(!v.reset_notifications);
     assert!(!v.start_with_windows);
+}
+
+#[test]
+fn featured_meters_show_their_place_and_move_up_or_down() {
+    let v = view(&Settings::default());
+    let move_edit = |meter: &str, up| SettingsEdit::MoveFeatured {
+        assistant: "t".into(),
+        account: "me".into(),
+        meter: meter.into(),
+        up,
+        current: vec!["a".into(), "b".into()],
+    };
+    let a = row(&v, "a label");
+    assert_eq!(a.position, Some(1));
+    assert!(!a.can_move_up && a.can_move_down);
+    assert_eq!(a.move_edit(false), Some(move_edit("a", false)));
+    assert_eq!(a.move_edit(true), None);
+
+    let b = row(&v, "b label");
+    assert_eq!(b.position, Some(2));
+    assert!(b.can_move_up && !b.can_move_down);
+    assert_eq!(b.move_edit(true), Some(move_edit("b", true)));
+    assert_eq!(b.move_edit(false), None);
+
+    let c = row(&v, "c label");
+    assert_eq!(c.position, None);
+    assert!(!c.can_move_up && !c.can_move_down);
+    assert_eq!(c.move_edit(true), None);
+}
+
+#[test]
+fn a_single_featured_meter_has_nowhere_to_move() {
+    let v = settings_view(
+        &catalog(true, true),
+        &state(&["b"]),
+        &Settings::default(),
+        false,
+    );
+    let b = row(&v, "b label");
+    assert_eq!(b.position, Some(1));
+    assert!(!b.can_move_up && !b.can_move_down);
+}
+
+#[test]
+fn the_tray_icon_page_offers_every_gauge() {
+    let v = view(&Settings::default());
+    assert_eq!(
+        v.gauge_options,
+        vec!["Rings", "Bars", "Number", "Stacked numbers"]
+    );
+    assert_eq!(v.gauge_index, 0);
+    assert!(v.show_badge && v.badge_enabled);
+    assert_eq!(
+        v.gauge_edit(3),
+        Some(SettingsEdit::Gauge(Gauge::StackedNumbers))
+    );
+    assert_eq!(v.gauge_edit(9), None);
+}
+
+#[test]
+fn the_badge_switch_is_off_limits_for_number_gauges() {
+    for (gauge, index, room) in [
+        (Gauge::Bars, 1, true),
+        (Gauge::Number, 2, false),
+        (Gauge::StackedNumbers, 3, false),
+    ] {
+        let mut s = Settings::default();
+        s.apply(SettingsEdit::Gauge(gauge));
+        s.apply(SettingsEdit::ShowBadge(false));
+        let v = view(&s);
+        assert_eq!(v.gauge_index, index);
+        assert!(!v.show_badge);
+        assert_eq!(v.badge_enabled, room, "{gauge:?}");
+    }
 }

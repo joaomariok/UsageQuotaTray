@@ -28,6 +28,26 @@ pub enum SettingValue {
     Text(String),
 }
 
+/// The shape in which the tray icon draws its Featured Meters.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Gauge {
+    #[default]
+    Rings,
+    Bars,
+    /// The first Featured Meter as a number.
+    Number,
+    /// Both Featured Meters as numbers, one above the other.
+    StackedNumbers,
+}
+
+impl Gauge {
+    /// Whether this Gauge leaves room for the Badge.
+    pub fn has_badge(self) -> bool {
+        matches!(self, Gauge::Rings | Gauge::Bars)
+    }
+}
+
 /// Values of one module's settings, by key.
 pub type ModuleValues = BTreeMap<String, SettingValue>;
 
@@ -42,6 +62,10 @@ pub struct Settings {
     )]
     pub active_poll: Option<Duration>,
     pub reset_notifications: bool,
+    #[serde(deserialize_with = "gauge_or_default")]
+    pub gauge: Gauge,
+    /// Applies only to the Gauges that have room for the Badge.
+    pub show_badge: bool,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub assistants: BTreeMap<String, AssistantSettings>,
 }
@@ -51,6 +75,8 @@ impl Default for Settings {
         Self {
             active_poll: None,
             reset_notifications: true,
+            gauge: Gauge::default(),
+            show_badge: true,
             assistants: BTreeMap::new(),
         }
     }
@@ -120,6 +146,15 @@ pub enum SettingsEdit {
         on: bool,
         current: Vec<MeterKey>,
     },
+    /// Moves `meter` one place up or down the Account's Featured Meters, which
+    /// `current` holds as shown.
+    MoveFeatured {
+        assistant: String,
+        account: String,
+        meter: MeterKey,
+        up: bool,
+        current: Vec<MeterKey>,
+    },
     Thresholds {
         assistant: String,
         account: String,
@@ -133,6 +168,8 @@ pub enum SettingsEdit {
     },
     ActivePoll(Option<Duration>),
     ResetNotifications(bool),
+    Gauge(Gauge),
+    ShowBadge(bool),
 }
 
 impl Settings {
@@ -204,6 +241,22 @@ impl Settings {
                 }
                 self.account_mut(&assistant, &account).featured = Some(list);
             }
+            SettingsEdit::MoveFeatured {
+                assistant,
+                account,
+                meter,
+                up,
+                current,
+            } => {
+                let mut list: Vec<MeterKey> = current.into_iter().take(MAX_FEATURED).collect();
+                if let Some(i) = list.iter().position(|k| *k == meter) {
+                    let j = if up { i.checked_sub(1) } else { Some(i + 1) };
+                    if let Some(j) = j.filter(|&j| j < list.len()) {
+                        list.swap(i, j);
+                    }
+                }
+                self.account_mut(&assistant, &account).featured = Some(list);
+            }
             SettingsEdit::Thresholds {
                 assistant,
                 account,
@@ -231,6 +284,8 @@ impl Settings {
             }
             SettingsEdit::ActivePoll(poll) => self.active_poll = poll.map(clamp_poll),
             SettingsEdit::ResetNotifications(on) => self.reset_notifications = on,
+            SettingsEdit::Gauge(gauge) => self.gauge = gauge,
+            SettingsEdit::ShowBadge(on) => self.show_badge = on,
         }
         self.prune();
     }
@@ -261,6 +316,13 @@ impl Settings {
         self.prune();
         self
     }
+}
+
+/// A Gauge this version does not know, say from a newer one, falls back to the default
+/// instead of discarding the whole file.
+fn gauge_or_default<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Gauge, D::Error> {
+    let value = serde_json::Value::deserialize(d)?;
+    Ok(serde_json::from_value(value).unwrap_or_default())
 }
 
 fn clamp_poll(d: Duration) -> Duration {

@@ -1,5 +1,6 @@
 // The settings window: Assistants (Accounts, Featured Meters, thresholds, module
-// settings), Alerts (polling, reset notifications, Start with Windows), About (removal).
+// settings), Tray icon (Gauge, Badge), Alerts (polling, reset notifications, Start with
+// Windows), About (removal).
 // Rows come pre-built from Rust (present/settings.rs); this file only lays them out.
 // Fluent style; follows the system light or dark theme.
 
@@ -21,6 +22,10 @@ export struct SettingRowData {
     editable: bool,
     text: string,
     placeholder: string,
+    // A Featured Meter's place on the tray icon, from 1; 0 when not Featured.
+    position: int,
+    can-move-up: bool,
+    can-move-down: bool,
 }
 
 component Caption inherits Text {
@@ -42,17 +47,25 @@ export component SettingsWindow inherits Window {
     in property <string> poll-warning;
     in property <bool> reset-notifications;
     in property <bool> start-with-windows;
+    in property <[string]> gauge-options;
+    in property <int> gauge-index;
+    in property <bool> show-badge;
+    in property <bool> badge-enabled;
     in property <string> data-folder;
     in property <string> version;
     callback row-toggled(int, bool);
     callback row-edited(int, string);
     callback row-accepted(int, string);
     callback row-clicked(int);
+    // A Featured Meter's arrow: true moves it up.
+    callback row-moved(int, bool);
+    callback gauge-selected(int);
+    callback show-badge-toggled(bool);
     callback poll-selected(int);
     callback reset-notifications-toggled(bool);
     callback start-with-windows-toggled(bool);
     callback remove-requested(bool);
-    // The selected settings page: 0 Assistants, 1 Alerts, 2 About.
+    // The selected settings page: 0 Assistants, 1 Tray icon, 2 Alerts, 3 About.
     in-out property <int> page: 0;
 
     title: "UsageQuotaTray settings";
@@ -66,7 +79,7 @@ export component SettingsWindow inherits Window {
 
     HorizontalLayout {
         nav := NavList {
-            items: ["Assistants", "Alerts", "About"];
+            items: ["Assistants", "Tray icon", "Alerts", "About"];
             current-index <=> root.page;
         }
 
@@ -136,6 +149,32 @@ export component SettingsWindow inherits Window {
                                 horizontal-stretch: 1;
                                 toggled => {
                                     root.row-toggled(i, self.checked);
+                                }
+                            }
+                            if row.position > 0: HorizontalLayout {
+                                spacing: 2px;
+                                Text {
+                                    text: row.position;
+                                    color: Palette.foreground;
+                                    opacity: 0.7;
+                                    vertical-alignment: center;
+                                    accessible-label: "Place " + row.position + " on the tray icon";
+                                }
+                                Button {
+                                    text: "\u{2191}";
+                                    enabled: row.can-move-up;
+                                    accessible-label: "Move " + row.label + " up";
+                                    clicked => {
+                                        root.row-moved(i, true);
+                                    }
+                                }
+                                Button {
+                                    text: "\u{2193}";
+                                    enabled: row.can-move-down;
+                                    accessible-label: "Move " + row.label + " down";
+                                    clicked => {
+                                        root.row-moved(i, false);
+                                    }
                                 }
                             }
                             if row.editable: LineEdit {
@@ -243,6 +282,49 @@ export component SettingsWindow inherits Window {
                 alignment: start;
                 Card {
                 Text {
+                    text: "Gauge";
+                    color: Palette.foreground;
+                    font-weight: 600;
+                }
+                ComboBox {
+                    model: root.gauge-options;
+                    current-index: root.gauge-index;
+                    accessible-label: "Gauge";
+                    selected => {
+                        root.gauge-selected(self.current-index);
+                    }
+                }
+                Caption {
+                    text: "How the tray icon draws its Featured Meters. The first Featured Meter is the outer ring, the top bar or the number; the Assistants page sets which comes first.";
+                }
+                }
+                Card {
+                Switch {
+                    text: "Show the Badge";
+                    checked: root.show-badge;
+                    enabled: root.badge-enabled;
+                    toggled => {
+                        root.show-badge-toggled(self.checked);
+                    }
+                }
+                Caption {
+                    text: root.badge-enabled
+                        ? "The mark that tells which Assistant the icon is showing."
+                        : "Numbers fill the whole icon, so they leave no room for the Badge.";
+                }
+                }
+            }
+        }
+
+        NavPage {
+            index: 2;
+            current: root.page;
+            VerticalLayout {
+                padding: 16px;
+                spacing: 12px;
+                alignment: start;
+                Card {
+                Text {
                     text: "Polling while you are at this PC";
                     color: Palette.foreground;
                     font-weight: 600;
@@ -285,7 +367,7 @@ export component SettingsWindow inherits Window {
         }
 
         NavPage {
-            index: 2;
+            index: 3;
             current: root.page;
             VerticalLayout {
                 padding: 16px;

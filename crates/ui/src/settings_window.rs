@@ -46,6 +46,9 @@ fn row_data(r: &SettingRow) -> SettingRowData {
         editable: r.editable,
         text: r.text.as_str().into(),
         placeholder: r.placeholder.as_str().into(),
+        position: r.position.map_or(0, |p| p as i32),
+        can_move_up: r.can_move_up,
+        can_move_down: r.can_move_down,
     }
 }
 
@@ -107,6 +110,15 @@ fn set_scalars(window: &SettingsWindow, view: &SettingsView) {
     window.set_poll_warning(view.poll_warning.clone().unwrap_or_default().into());
     window.set_reset_notifications(view.reset_notifications);
     window.set_start_with_windows(view.start_with_windows);
+    let gauges: Vec<slint::SharedString> = view
+        .gauge_options
+        .iter()
+        .map(|o| o.as_str().into())
+        .collect();
+    window.set_gauge_options(ModelRc::new(VecModel::from(gauges)));
+    window.set_gauge_index(view.gauge_index as i32);
+    window.set_show_badge(view.show_badge);
+    window.set_badge_enabled(view.badge_enabled);
 }
 
 /// Re-renders an open window from the latest state and settings.
@@ -205,6 +217,32 @@ fn wire(window: &SettingsWindow) {
         if let Some(request) = request {
             shell::run_action(request);
         }
+    });
+    window.on_row_moved(|i, up| {
+        let edit = OPEN.with(|o| {
+            o.borrow()
+                .as_ref()?
+                .view
+                .rows
+                .get(usize::try_from(i).ok()?)?
+                .move_edit(up)
+        });
+        if let Some(edit) = edit {
+            shell::apply_edit(edit);
+        }
+    });
+    window.on_gauge_selected(|i| {
+        let edit = OPEN.with(|o| {
+            o.borrow()
+                .as_ref()
+                .and_then(|open| open.view.gauge_edit(usize::try_from(i).ok()?))
+        });
+        if let Some(edit) = edit {
+            shell::apply_edit(edit);
+        }
+    });
+    window.on_show_badge_toggled(|on| {
+        shell::apply_edit(SettingsEdit::ShowBadge(on));
     });
     window.on_poll_selected(|i| {
         let edit = OPEN.with(|o| {

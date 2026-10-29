@@ -28,7 +28,7 @@ pub(crate) use autostart::set as set_autostart;
 pub use dev_hooks::{DevHooks, Shot};
 
 use crate::badge::{BadgeOrigin, resolve_badge, with_default_fill};
-use crate::icon::{IconStyle, render_icon};
+use crate::icon::{IconLook, IconStyle, render_gauge};
 use crate::lifecycle::{self, CurrentUserRegistry, OutsideChange};
 use crate::notify::{self, Toasts};
 use crate::present::{self, ActionRequest, Moment, PopupView, Ring, SettingsView, Tone, TrayView};
@@ -92,6 +92,7 @@ struct IconKey {
     dot: bool,
     size: u32,
     style: IconStyle,
+    look: IconLook,
 }
 
 thread_local! {
@@ -110,9 +111,14 @@ fn icon_style() -> IconStyle {
     }
 }
 
-fn make_icon(rings: &[Ring], badge_svg: &str, dot: bool) -> Option<tray_icon::Icon> {
+fn make_icon(
+    rings: &[Ring],
+    badge_svg: &str,
+    dot: bool,
+    look: IconLook,
+) -> Option<tray_icon::Icon> {
     let size = platform::small_icon_size();
-    let rgba = render_icon(size, rings, badge_svg, icon_style(), dot);
+    let rgba = render_gauge(size, rings, badge_svg, icon_style(), dot, look);
     tray_icon::Icon::from_rgba(rgba, size, size).ok()
 }
 
@@ -150,6 +156,7 @@ fn update_tray(ui: &mut Ui, view: &TrayView) {
         dot: view.dot,
         size: platform::small_icon_size(),
         style: icon_style(),
+        look: IconLook::from(&ui.settings),
     };
     let Some(tray) = ui.tray.as_ref() else {
         return;
@@ -169,7 +176,7 @@ fn update_tray(ui: &mut Ui, view: &TrayView) {
                 .clone(),
             _ => String::new(),
         };
-        if let Some(icon) = make_icon(&view.rings, &svg, view.dot) {
+        if let Some(icon) = make_icon(&view.rings, &svg, view.dot, key.look) {
             let _ = tray.set_icon(Some(icon));
             ui.shown_icon = Some(key);
         }
@@ -390,6 +397,8 @@ pub(crate) fn apply_edit(edit: SettingsEdit) {
         }
         ui.engine.apply_settings(ui.settings.clone());
     });
+    // The Gauge and the Badge change only the icon, so redraw it now.
+    present_now();
     settings_window::refresh();
 }
 
@@ -482,7 +491,7 @@ pub fn run(engine: Engine, clock: Arc<dyn Clock>, options: ShellOptions) -> Resu
     let usage_id = usage_item.id().clone();
 
     let tray = TrayIconBuilder::new()
-        .with_icon(make_icon(&[], "", false).ok_or("icon")?)
+        .with_icon(make_icon(&[], "", false, IconLook::default()).ok_or("icon")?)
         .with_tooltip("UsageQuotaTray")
         .with_menu(Box::new(menu))
         .with_menu_on_left_click(false)

@@ -1,6 +1,9 @@
 //! The runtime-rendered tray icon: rings with color bands around the Badge.
 
-use uqt_ui::icon::{IconStyle, app_icon_png, render_icon, render_rgba};
+use uqt_core::settings::Gauge;
+use uqt_ui::icon::{
+    IconLook, IconStyle, app_icon_png, number_text, render_gauge, render_icon, render_rgba,
+};
 use uqt_ui::present::{Ring, Tone};
 
 #[test]
@@ -154,4 +157,254 @@ fn an_unrenderable_badge_still_produces_an_icon() {
         IconStyle::DarkTaskbar,
     );
     assert_eq!(rgba.len(), 16 * 16 * 4);
+}
+
+fn look(gauge: Gauge, show_badge: bool) -> IconLook {
+    IconLook { gauge, show_badge }
+}
+
+fn gauge(size: u32, rings: &[Ring], gauge: Gauge, show_badge: bool) -> Vec<u8> {
+    render_gauge(
+        size,
+        rings,
+        BADGE,
+        IconStyle::DarkTaskbar,
+        false,
+        look(gauge, show_badge),
+    )
+}
+
+fn is_green(p: [u8; 4]) -> bool {
+    p[3] == 255 && p[1] > 140 && p[0] < 90 && p[2] < 100
+}
+
+fn is_amber(p: [u8; 4]) -> bool {
+    p[3] == 255 && p[0] > 180 && p[1] > 120 && p[2] < 80
+}
+
+fn is_red(p: [u8; 4]) -> bool {
+    p[3] == 255 && p[0] > 180 && p[1] < 100 && p[2] < 100
+}
+
+fn is_badge(p: [u8; 4]) -> bool {
+    p == [0x7A, 0x5A, 0xF8, 255]
+}
+
+/// How many pixels in rows `top..bottom` match.
+fn count(rgba: &[u8], size: u32, top: u32, bottom: u32, f: impl Fn([u8; 4]) -> bool) -> usize {
+    (top..bottom)
+        .flat_map(|y| (0..size).map(move |x| (x, y)))
+        .filter(|&(x, y)| f(pixel(rgba, size, x, y)))
+        .count()
+}
+
+#[test]
+fn every_gauge_renders_at_every_tray_size() {
+    let rings = [ring(0.5, Tone::Green), ring(0.2, Tone::Amber)];
+    for g in [
+        Gauge::Rings,
+        Gauge::Bars,
+        Gauge::Number,
+        Gauge::StackedNumbers,
+    ] {
+        for size in [16, 20, 24, 32] {
+            for badge in [true, false] {
+                assert_eq!(
+                    gauge(size, &rings, g, badge).len(),
+                    (size * size * 4) as usize
+                );
+            }
+            assert_eq!(gauge(size, &[], g, true).len(), (size * size * 4) as usize);
+        }
+    }
+}
+
+#[test]
+fn the_default_look_is_todays_rings_with_the_badge() {
+    let rings = [ring(0.4, Tone::Green), ring(0.7, Tone::Amber)];
+    let looked = render_gauge(
+        32,
+        &rings,
+        BADGE,
+        IconStyle::DarkTaskbar,
+        true,
+        IconLook::default(),
+    );
+    assert_eq!(
+        looked,
+        render_icon(32, &rings, BADGE, IconStyle::DarkTaskbar, true)
+    );
+}
+
+#[test]
+fn rings_without_the_badge_leave_the_centre_empty() {
+    let rgba = gauge(32, &[ring(0.5, Tone::Green)], Gauge::Rings, false);
+    assert_eq!(pixel(&rgba, 32, 16, 16)[3], 0);
+    assert!(is_green(pixel(&rgba, 32, 18, 1)));
+}
+
+#[test]
+fn bars_fill_left_to_right_with_the_first_meter_on_top() {
+    let size = 32;
+    let rgba = gauge(
+        size,
+        &[ring(0.5, Tone::Green), ring(0.75, Tone::Red)],
+        Gauge::Bars,
+        true,
+    );
+    // The two bars share the bottom half: green above red.
+    let green_rows: Vec<u32> = (0..size)
+        .filter(|&y| count(&rgba, size, y, y + 1, is_green) > 0)
+        .collect();
+    let red_rows: Vec<u32> = (0..size)
+        .filter(|&y| count(&rgba, size, y, y + 1, is_red) > 0)
+        .collect();
+    assert!(!green_rows.is_empty() && !red_rows.is_empty());
+    assert!(green_rows.iter().max() < red_rows.iter().min());
+    assert!(*green_rows.first().unwrap() >= size / 2);
+
+    // Filled from the left up to the fraction, then the track.
+    let y = green_rows[green_rows.len() / 2];
+    assert!(is_green(pixel(&rgba, size, 2, y)));
+    assert!(!is_green(pixel(&rgba, size, size - 3, y)));
+    assert!(pixel(&rgba, size, size - 3, y)[3] > 0, "the track shows");
+    let y = red_rows[red_rows.len() / 2];
+    assert!(is_red(pixel(&rgba, size, size * 3 / 4 - 3, y)));
+    assert!(!is_red(pixel(&rgba, size, size - 3, y)));
+
+    // The Badge sits above the bars.
+    assert!(count(&rgba, size, 0, size / 2, is_badge) > 0);
+}
+
+#[test]
+fn bars_without_the_badge_take_the_whole_icon() {
+    let size = 32;
+    let with = gauge(
+        size,
+        &[ring(0.5, Tone::Green), ring(0.5, Tone::Green)],
+        Gauge::Bars,
+        true,
+    );
+    let without = gauge(
+        size,
+        &[ring(0.5, Tone::Green), ring(0.5, Tone::Green)],
+        Gauge::Bars,
+        false,
+    );
+    assert_eq!(count(&without, size, 0, size, is_badge), 0);
+    assert!(count(&without, size, 0, size, is_green) > count(&with, size, 0, size, is_green));
+    assert!(count(&without, size, 0, size / 2, is_green) > 0);
+}
+
+#[test]
+fn numbers_read_as_the_percentage_used() {
+    assert_eq!(number_text(Some(&ring(0.42, Tone::Green))), "42");
+    assert_eq!(number_text(Some(&ring(0.0, Tone::Green))), "0");
+    assert_eq!(number_text(Some(&ring(0.996, Tone::Red))), "99");
+    assert_eq!(number_text(Some(&ring(1.0, Tone::Red))), "!!");
+    assert_eq!(number_text(Some(&ring(1.4, Tone::Red))), "!!");
+    // Stale or past its reset: no number to trust.
+    assert_eq!(number_text(Some(&ring(0.42, Tone::Grey))), "--");
+    assert_eq!(number_text(None), "--");
+}
+
+#[test]
+fn the_number_is_drawn_in_its_band_colour_without_the_badge() {
+    let size = 32;
+    let rgba = gauge(
+        size,
+        &[ring(0.8, Tone::Amber), ring(0.1, Tone::Green)],
+        Gauge::Number,
+        true,
+    );
+    assert!(count(&rgba, size, 0, size, is_amber) > 20);
+    assert_eq!(
+        count(&rgba, size, 0, size, is_green),
+        0,
+        "only the first Meter"
+    );
+    assert_eq!(count(&rgba, size, 0, size, is_badge), 0);
+    assert_ne!(
+        rgba,
+        gauge(size, &[ring(0.9, Tone::Amber)], Gauge::Number, true),
+        "a different number draws differently"
+    );
+}
+
+#[test]
+fn stacked_numbers_show_the_first_meter_above_the_second() {
+    let size = 32;
+    let rgba = gauge(
+        size,
+        &[ring(0.8, Tone::Amber), ring(1.2, Tone::Red)],
+        Gauge::StackedNumbers,
+        true,
+    );
+    assert!(count(&rgba, size, 0, size / 2, is_amber) > 10);
+    assert_eq!(count(&rgba, size, size / 2, size, is_amber), 0);
+    assert!(count(&rgba, size, size / 2, size, is_red) > 5);
+    assert_eq!(count(&rgba, size, 0, size / 2, is_red), 0);
+    assert_eq!(count(&rgba, size, 0, size, is_badge), 0);
+}
+
+#[test]
+fn digits_are_drawn_darker_on_a_light_taskbar() {
+    let size = 32;
+    let on = |style| {
+        render_gauge(
+            size,
+            &[ring(0.42, Tone::Amber)],
+            BADGE,
+            style,
+            false,
+            look(Gauge::Number, false),
+        )
+    };
+    let brightest = |rgba: &[u8]| {
+        rgba.chunks(4)
+            .filter(|p| p[3] == 255)
+            .map(|p| p[0] as u32 + p[1] as u32 + p[2] as u32)
+            .max()
+            .unwrap()
+    };
+    let (dark, light) = (on(IconStyle::DarkTaskbar), on(IconStyle::LightTaskbar));
+    assert!(brightest(&light) + 100 < brightest(&dark));
+    // Still amber, not a shade of grey.
+    let p = light.chunks(4).find(|p| p[3] == 255).unwrap();
+    assert!(p[0] > p[2] + 80 && p[1] > p[2] + 40, "{p:?}");
+}
+
+#[test]
+fn the_holes_in_digits_stay_open_at_16_px() {
+    let size = 16;
+    for style in [IconStyle::DarkTaskbar, IconStyle::LightTaskbar] {
+        let rgba = render_gauge(
+            size,
+            &[ring(0.88, Tone::Amber)],
+            BADGE,
+            style,
+            false,
+            look(Gauge::Number, false),
+        );
+        let opaque: Vec<(u32, u32)> = (0..size)
+            .flat_map(|y| (0..size).map(move |x| (x, y)))
+            .filter(|&(x, y)| pixel(&rgba, size, x, y)[3] > 0)
+            .collect();
+        let (l, r) = (
+            opaque.iter().map(|p| p.0).min().unwrap(),
+            opaque.iter().map(|p| p.0).max().unwrap() + 1,
+        );
+        let (t, b) = (
+            opaque.iter().map(|p| p.1).min().unwrap(),
+            opaque.iter().map(|p| p.1).max().unwrap() + 1,
+        );
+        // "88" spans 7 grid columns and 5 rows; the first hole is cell (1, 1).
+        let x = l + (r - l) * 3 / 14;
+        let y = t + (b - t) * 3 / 10;
+        assert_eq!(
+            pixel(&rgba, size, x, y)[3],
+            0,
+            "{style:?}: hole at ({x}, {y})"
+        );
+    }
 }

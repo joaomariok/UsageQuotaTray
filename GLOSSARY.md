@@ -22,7 +22,7 @@ _Avoid_: provider, adapter, feed, fetcher
 
 **Meter**:
 One quantity shown to the user for an Account: how much of something has been used, optionally against a limit.
-_Avoid_: gauge, stat, metric (reserved for OpenTelemetry metrics, which a Source may translate into Meters)
+_Avoid_: stat, metric (reserved for OpenTelemetry metrics, which a Source may translate into Meters)
 
 **Reading**:
 One Meter's value at one moment, obtained from one Source, either Exact or Estimate.
@@ -49,6 +49,10 @@ _Avoid_: approximate, guess
 **Featured Meter**:
 A Meter the user chose to show on the tray icon and in its tooltip.
 _Avoid_: pinned meter (Windows uses "pin" for keeping a tray icon visible), primary meter
+
+**Gauge**:
+The shape in which the tray icon draws its Featured Meters, such as rings or numbers. The user picks one Gauge for the whole app.
+_Avoid_: icon style, layout, meter (for the shape)
 
 **Badge**:
 The small mark on the tray icon that tells the user which Assistant the icon is showing.

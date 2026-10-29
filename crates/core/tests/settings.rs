@@ -5,8 +5,8 @@
 use std::time::Duration;
 
 use uqt_core::settings::{
-    DEFAULT_THRESHOLDS, MIN_ACTIVE_POLL, SettingValue, Settings, SettingsEdit, SettingsStore,
-    parse_thresholds, thresholds_text,
+    DEFAULT_THRESHOLDS, Gauge, MIN_ACTIVE_POLL, SettingValue, Settings, SettingsEdit,
+    SettingsStore, parse_thresholds, thresholds_text,
 };
 
 fn store() -> (tempfile::TempDir, SettingsStore) {
@@ -172,6 +172,90 @@ fn at_most_two_meters_are_featured_starting_from_the_current_choice() {
         s.featured("c", "me"),
         Some(vec!["five_hour".to_string(), "opus".to_string()])
     );
+}
+
+#[test]
+fn moving_a_featured_meter_swaps_it_with_its_neighbour() {
+    let current = vec!["five_hour".to_string(), "weekly".to_string()];
+    let moved = |s: &Settings, meter: &str, up: bool, current: &[String]| {
+        edited(
+            s,
+            SettingsEdit::MoveFeatured {
+                assistant: "c".into(),
+                account: "me".into(),
+                meter: meter.into(),
+                up,
+                current: current.to_vec(),
+            },
+        )
+    };
+    let swapped = vec!["weekly".to_string(), "five_hour".to_string()];
+
+    let s = moved(&Settings::default(), "weekly", true, &current);
+    assert_eq!(s.featured("c", "me"), Some(swapped.clone()));
+    let s = moved(&s, "weekly", false, &swapped);
+    assert_eq!(s.featured("c", "me"), Some(current.clone()));
+
+    // Already first or last, or not Featured: the order stays.
+    let s = moved(&Settings::default(), "five_hour", true, &current);
+    assert_eq!(s.featured("c", "me"), Some(current.clone()));
+    let s = moved(&s, "weekly", false, &current);
+    assert_eq!(s.featured("c", "me"), Some(current.clone()));
+    let s = moved(&s, "opus", true, &current);
+    assert_eq!(s.featured("c", "me"), Some(current.clone()));
+}
+
+#[test]
+fn the_icon_starts_as_rings_with_the_badge() {
+    let s = Settings::default();
+    assert_eq!(s.gauge, Gauge::Rings);
+    assert!(s.show_badge);
+}
+
+#[test]
+fn a_file_from_before_gauges_loads_as_rings_with_the_badge() {
+    let (_dir, store) = store();
+    std::fs::create_dir_all(store.path().parent().unwrap()).unwrap();
+    std::fs::write(store.path(), r#"{ "reset_notifications": false }"#).unwrap();
+
+    let s = store.load();
+    assert_eq!(s.gauge, Gauge::Rings);
+    assert!(s.show_badge);
+    assert!(!s.reset_notifications);
+}
+
+#[test]
+fn the_gauge_and_badge_choice_are_saved_by_name() {
+    let (_dir, store) = store();
+    let s = edited(
+        &edited(
+            &Settings::default(),
+            SettingsEdit::Gauge(Gauge::StackedNumbers),
+        ),
+        SettingsEdit::ShowBadge(false),
+    );
+    store.save(&s).unwrap();
+
+    assert_eq!(store.load(), s);
+    let text = std::fs::read_to_string(store.path()).unwrap();
+    let json: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(json["gauge"], "stacked_numbers");
+    assert_eq!(json["show_badge"], false);
+}
+
+#[test]
+fn an_unknown_gauge_in_the_file_falls_back_to_rings() {
+    let (_dir, store) = store();
+    std::fs::create_dir_all(store.path().parent().unwrap()).unwrap();
+    std::fs::write(
+        store.path(),
+        r#"{ "gauge": "sparkline", "reset_notifications": false }"#,
+    )
+    .unwrap();
+
+    let s = store.load();
+    assert_eq!(s.gauge, Gauge::Rings);
+    assert!(!s.reset_notifications);
 }
 
 #[test]

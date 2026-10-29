@@ -6,9 +6,17 @@ use uqt_core::contract::FieldKind;
 use uqt_core::engine::{Catalog, EngineState};
 use uqt_core::model::MeterKey;
 use uqt_core::settings::{
-    DEFAULT_THRESHOLDS, MAX_FEATURED, SettingValue, Settings, SettingsEdit, parse_thresholds,
-    thresholds_text,
+    DEFAULT_THRESHOLDS, Gauge, MAX_FEATURED, SettingValue, Settings, SettingsEdit,
+    parse_thresholds, thresholds_text,
 };
+
+/// The Gauges in the order the Tray icon page lists them, with their names.
+const GAUGES: [(Gauge, &str); 4] = [
+    (Gauge::Rings, "Rings"),
+    (Gauge::Bars, "Bars"),
+    (Gauge::Number, "Number"),
+    (Gauge::StackedNumbers, "Stacked numbers"),
+];
 
 /// Polling choices offered besides the default, in minutes.
 const POLL_MINUTES: [u64; 5] = [2, 3, 5, 10, 15];
@@ -82,6 +90,10 @@ pub struct SettingRow {
     pub editable: bool,
     pub text: String,
     pub placeholder: String,
+    /// A Featured Meter's place on the tray icon, from 1 (outer ring, top).
+    pub position: Option<usize>,
+    pub can_move_up: bool,
+    pub can_move_down: bool,
     pub target: RowTarget,
 }
 
@@ -103,6 +115,9 @@ impl SettingRow {
             editable: false,
             text: String::new(),
             placeholder: String::new(),
+            position: None,
+            can_move_up: false,
+            can_move_down: false,
             target,
         }
     }
@@ -111,6 +126,30 @@ impl SettingRow {
     pub fn action(&self) -> Option<ActionRequest> {
         match &self.target {
             RowTarget::Action(request) => Some(request.clone()),
+            _ => None,
+        }
+    }
+
+    /// Moving a Featured Meter one place up or down, when it can go there.
+    pub fn move_edit(&self, up: bool) -> Option<SettingsEdit> {
+        let can = if up {
+            self.can_move_up
+        } else {
+            self.can_move_down
+        };
+        match &self.target {
+            RowTarget::Meter {
+                assistant,
+                account,
+                meter,
+                featured,
+            } if can => Some(SettingsEdit::MoveFeatured {
+                assistant: assistant.clone(),
+                account: account.clone(),
+                meter: meter.clone(),
+                up,
+                current: featured.clone(),
+            }),
             _ => None,
         }
     }
@@ -179,6 +218,11 @@ pub struct SettingsView {
     pub poll_warning: Option<String>,
     pub reset_notifications: bool,
     pub start_with_windows: bool,
+    pub gauge_options: Vec<String>,
+    pub gauge_index: usize,
+    pub show_badge: bool,
+    /// Whether the chosen Gauge has room for the Badge.
+    pub badge_enabled: bool,
 }
 
 impl SettingsView {
@@ -186,6 +230,10 @@ impl SettingsView {
         self.poll_choices
             .get(index)
             .map(|c| SettingsEdit::ActivePoll(*c))
+    }
+
+    pub fn gauge_edit(&self, index: usize) -> Option<SettingsEdit> {
+        GAUGES.get(index).map(|(g, _)| SettingsEdit::Gauge(*g))
     }
 }
 
@@ -218,7 +266,8 @@ pub fn settings_view(
                 },
             );
             row.checked = acc.enabled;
-            row.detail = "Check up to two Meters for the tray icon. Alerts are in percent \
+            row.detail = "Check up to two Meters for the tray icon; the arrows set which comes \
+                first. Alerts are in percent \
                 of the limit; type off for none."
                 .into();
             rows.push(row);
@@ -253,7 +302,10 @@ pub fn settings_view(
                         featured: featured.clone(),
                     },
                 );
-                row.checked = featured.contains(&m.key);
+                row.position = featured.iter().position(|k| *k == m.key).map(|i| i + 1);
+                row.can_move_up = row.position.is_some_and(|p| p > 1);
+                row.can_move_down = row.position.is_some_and(|p| p < featured.len());
+                row.checked = row.position.is_some();
                 row.enabled = row.checked || featured.len() < MAX_FEATURED;
                 row.editable = m.limit.is_some();
                 row.placeholder = thresholds_text(&DEFAULT_THRESHOLDS);
@@ -357,5 +409,12 @@ pub fn settings_view(
             .map(|_| POLL_WARNING.to_string()),
         reset_notifications: settings.reset_notifications,
         start_with_windows,
+        gauge_options: GAUGES.iter().map(|(_, name)| name.to_string()).collect(),
+        gauge_index: GAUGES
+            .iter()
+            .position(|(g, _)| *g == settings.gauge)
+            .unwrap_or(0),
+        show_badge: settings.show_badge,
+        badge_enabled: settings.gauge.has_badge(),
     }
 }

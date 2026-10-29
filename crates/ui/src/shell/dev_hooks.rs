@@ -59,6 +59,7 @@ mod timers {
 
     use super::{DevHooks, Shot};
     use crate::Popup;
+    use crate::icon::IconLook;
     use crate::present::{Ring, Tone};
     use crate::settings_window;
     use crate::shell::{hide_popup, make_icon, show_popup, with_ui};
@@ -130,8 +131,9 @@ mod timers {
                 ];
                 with_ui(|ui| {
                     let svg = ui.badges.values().next().cloned().unwrap_or_default();
+                    let look = IconLook::from(&ui.settings);
                     if let (Some(tray), Some(icon)) =
-                        (ui.tray.as_ref(), make_icon(&rings, &svg, false))
+                        (ui.tray.as_ref(), make_icon(&rings, &svg, false, look))
                     {
                         let _ = tray.set_icon(Some(icon));
                     }
