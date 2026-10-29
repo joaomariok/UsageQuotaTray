@@ -4,9 +4,22 @@ A small Windows 11 tray app that shows how much of your AI coding assistant's us
 
 The first Assistant is Claude Code. The core is Assistant-neutral, so other Assistants can be added as modules (see [docs/adding-an-assistant.md](docs/adding-an-assistant.md)).
 
-It runs as one per-user process: no service, no admin rights, no installer, no .NET or WebView2. Built in Rust with Slint's software renderer. See [ADR-0001](docs/adr/0001-per-user-tray-process-not-windows-service.md) and [ADR-0002](docs/adr/0002-rust-and-slint-software-renderer.md). Vocabulary is in [GLOSSARY.md](GLOSSARY.md).
+It runs as one per-user process: no service, no admin rights, no .NET or WebView2. Install it per user with the installer, or unzip the portable zip and run it. Built in Rust with Slint's software renderer. See [ADR-0001](docs/adr/0001-per-user-tray-process-not-windows-service.md), [ADR-0002](docs/adr/0002-rust-and-slint-software-renderer.md) and [ADR-0003](docs/adr/0003-per-user-inno-setup-installer-next-to-the-portable-zip.md). Vocabulary is in [GLOSSARY.md](GLOSSARY.md).
 
 > **Not affiliated with Anthropic.** UsageQuotaTray is an independent project. "Claude" and "Anthropic" belong to their owners. The Claude Code Badge is the Claude logo, shown unaltered to identify the Assistant.
+
+## Install
+
+Two downloads, the same app:
+
+- **Installer** (`UsageQuotaTray-Setup-<version>.exe`): installs for the current user only, without admin rights, to `%LOCALAPPDATA%\Programs\UsageQuotaTray` (you can pick another folder). It adds a Start menu shortcut and an Apps & features entry, and offers "Start with Windows" (on by default) and "Launch now".
+- **Portable zip** (`UsageQuotaTray-<version>.zip`): unzip `usagequotatray.exe` and `uqt-statusline.exe` into one folder and run `usagequotatray.exe`. Keep both exes together; the statusline install button only appears when the helper sits next to the app.
+
+Both are unsigned, so Windows SmartScreen may say "Windows protected your PC". Choose **More info**, then **Run anyway**.
+
+**Upgrade.** Run the new installer. It asks you to exit a running tray first, replaces the files in the same folder, keeps your settings and the statusline helper, and starts the tray again if it was running. For the zip, exit the tray and replace both exes in place.
+
+**Uninstall.** For the installer, use Apps & features (or "Remove UsageQuotaTray from this PC" in Settings, which opens the uninstaller). Exit the tray first. The uninstaller asks whether to also delete your settings and logs (default No), then runs the same removal as the app (see "Removing it" below) before deleting the files. If Claude Code's `statusLine` cannot be put back, it stops and removes nothing. For the zip, use "Remove UsageQuotaTray from this PC", then delete the folder.
 
 ## Privacy and security
 
@@ -41,10 +54,11 @@ Config folders: `CLAUDE_CONFIG_DIR` if set, otherwise `%USERPROFILE%\.claude`, p
 
 **Windows registry** (current user only):
 
-- `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\UsageQuotaTray`, only if you turn on "Start with Windows".
+- `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\UsageQuotaTray`, only if you turn on "Start with Windows" (in the app or the installer).
+- The installer also adds its Apps & features entry under `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall` and a Start menu shortcut; the uninstaller removes both.
 - `HKCU\Software\Classes\AppUserModelId\UsageQuotaTray`: the notification identity (display name and icon) so toasts show as UsageQuotaTray. Written at startup.
 
-**Removing it.** Settings has "Remove UsageQuotaTray from this PC". After you confirm, it first uninstalls the statusline helper if it is installed, putting your original `statusLine` back in Claude Code's settings (the confirmation says so), then deletes both registry entries above and, if you choose, the whole `%LOCALAPPDATA%\UsageQuotaTray` folder, and quits. If the `statusLine` cannot be put back, nothing is removed and the app keeps running. Then delete the zip contents.
+**Removing it.** Settings has "Remove UsageQuotaTray from this PC". After you confirm, it first uninstalls the statusline helper if it is installed, putting your original `statusLine` back in Claude Code's settings (the confirmation says so), then deletes both registry entries above and, if you choose, the whole `%LOCALAPPDATA%\UsageQuotaTray` folder, and quits. If the `statusLine` cannot be put back, nothing is removed and the app keeps running. Then delete the zip contents. An installed copy instead opens its uninstaller and quits; the uninstaller runs the same removal with `usagequotatray.exe --remove-from-pc` (plus `--delete-data` if you chose to delete settings and logs) and then deletes the files, the shortcut and its Apps & features entry.
 
 ## Known limitations
 
@@ -81,6 +95,8 @@ Development switches are compiled in only with the `dev-hooks` feature (`cargo b
 ## Packaging
 
 Ship `usagequotatray.exe` and `uqt-statusline.exe` side by side in one folder (both in `target\release`). The statusline install button only appears when the helper sits next to the app.
+
+`tools/installer/build.ps1` builds the release exes and writes both downloads to `dist\`: the installer (needs [Inno Setup 6](https://jrsoftware.org/isinfo.php); `ISCC.exe` is found with `-Iscc`, on `PATH` or from its install) and the zip. `tools/installer/smoke.ps1` installs silently into a temporary folder, checks the files, Run value, shortcut and Apps entry, uninstalls, and checks they are gone. It uses the real current user's registry and Start menu, so it refuses to run if UsageQuotaTray is installed, running or set to start with Windows, and it never touches Claude Code's settings or your app data.
 
 ## License and attribution
 

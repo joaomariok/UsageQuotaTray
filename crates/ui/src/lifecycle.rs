@@ -332,3 +332,52 @@ impl Drop for SingleInstance {
         }
     }
 }
+
+/// The mutex every running tray holds, whatever its data folder, so the installer
+/// (`AppMutex` in `tools/installer/UsageQuotaTray.iss`) can tell the app is running.
+pub const RUNNING_MUTEX: &str = "UsageQuotaTray.Running";
+
+/// Holds a named mutex that any number of instances may share, while this one runs.
+pub struct RunningMarker(HANDLE);
+
+impl RunningMarker {
+    /// `None` only when the mutex cannot be created at all.
+    pub fn hold(name: &str) -> Option<Self> {
+        unsafe { CreateMutexW(None, false, &HSTRING::from(name)) }
+            .ok()
+            .map(Self)
+    }
+}
+
+impl Drop for RunningMarker {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = CloseHandle(self.0);
+        }
+    }
+}
+
+/// The installer's uninstaller (`unins000.exe`, or another three-digit number) in
+/// `exe_dir`, when this copy was installed rather than unzipped.
+pub fn installed_uninstaller(exe_dir: &Path) -> Option<std::path::PathBuf> {
+    let mut found: Vec<_> = std::fs::read_dir(exe_dir)
+        .ok()?
+        .filter_map(Result::ok)
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(is_uninstaller_name)
+        })
+        .collect();
+    found.sort();
+    found.into_iter().next()
+}
+
+fn is_uninstaller_name(name: &str) -> bool {
+    let name = fold(name);
+    name.strip_prefix("unins")
+        .and_then(|rest| rest.strip_suffix(".exe"))
+        .is_some_and(|n| n.len() == 3 && n.bytes().all(|b| b.is_ascii_digit()))
+}

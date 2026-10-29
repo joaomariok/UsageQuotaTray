@@ -5,6 +5,6 @@ UsageQuotaTray is written in Rust with its UI in Slint (fluent style, software r
 ## Consequences
 
 - The software renderer is deliberate: Slint's GPU renderer cost about 60 MiB for the same UI. Do not switch renderers without measuring.
-- Slint is used under its royalty-free license while our code stays MIT. Attribution is the Slint badge in the README and on the Releases page, not the in-app `AboutSlint` widget.
+- Slint is used under its royalty-free license while our code stays MIT. Attribution is the Slint badge in the README, not the in-app `AboutSlint` widget.
 - Slint's standard widgets fall short of Windows 11 Settings (top tabs, plain group boxes), so the UI crate carries a few components of its own, such as a left navigation list and a card.
 - Slint's build scripts exceed the Windows path limit in deeply nested folders; build there with a short `CARGO_TARGET_DIR`.

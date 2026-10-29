@@ -1,5 +1,7 @@
 //! The composition root: the only crate that names Assistant modules.
 
+pub mod cli;
+
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;

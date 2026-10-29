@@ -396,8 +396,31 @@ pub(crate) fn apply_edit(edit: SettingsEdit) {
 /// "Remove UsageQuotaTray from this PC", after the user confirms: first undoes the
 /// changes made to other programs' files (the statusline helper), then deletes the
 /// app's entries; then quits. When undoing fails nothing is deleted and the app stays.
+/// An installed copy hands over to the installer's uninstaller instead, which asks its
+/// own questions and runs the same removal headless.
 pub(crate) fn remove_from_pc(delete_data: bool) {
     let owner = settings_window::hwnd();
+    let exe_dir = with_ui(|ui| ui.exe.clone())
+        .flatten()
+        .and_then(|e| e.parent().map(|p| p.to_path_buf()));
+    if let Some(uninstaller) = exe_dir
+        .as_deref()
+        .and_then(lifecycle::installed_uninstaller)
+    {
+        log::info!("starting the uninstaller {}", uninstaller.display());
+        match std::process::Command::new(&uninstaller).spawn() {
+            Ok(_) => {
+                with_ui(|ui| ui.store = None);
+                let _ = slint::quit_event_loop();
+            }
+            Err(e) => platform::show_error(
+                owner,
+                "Remove UsageQuotaTray",
+                &format!("Could not start the uninstaller: {e}"),
+            ),
+        }
+        return;
+    }
     let changes = with_ui(|ui| ui.outside_changes.clone()).unwrap_or_default();
     let changes: Vec<&dyn OutsideChange> = changes.iter().map(|c| c.as_ref()).collect();
     let folder = delete_data.then(data_folder_text);

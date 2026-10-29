@@ -4,6 +4,7 @@
 use std::rc::Rc;
 use std::sync::Arc;
 
+use uqt_app::cli::{self, Command};
 use uqt_app::{
     ModuleOptions, StatuslineChange, app_data_dir, enabled_modules_with, statusline_installer,
 };
@@ -14,10 +15,42 @@ use uqt_core::logging::FileLogger;
 use uqt_core::push::pipe_name;
 use uqt_core::settings::SettingsStore;
 use uqt_core::time::SystemClock;
-use uqt_ui::lifecycle::{OutsideChange, SingleInstance, instance_name};
+use uqt_ui::lifecycle::{
+    CurrentUserRegistry, OutsideChange, RUNNING_MUTEX, RunningMarker, SingleInstance, instance_name,
+};
 use uqt_ui::{DevHooks, ShellOptions};
 
 fn main() {
+    match cli::parse(std::env::args().skip(1)) {
+        Ok(Command::Tray) => run_tray(),
+        Ok(Command::RemoveFromPc { delete_data }) => {
+            std::process::exit(remove_from_pc(delete_data))
+        }
+        Err(_) => std::process::exit(cli::EXIT_USAGE),
+    }
+}
+
+/// `--remove-from-pc`: what the in-app button does after confirming, with no UI. The
+/// uninstaller runs it after closing the tray, and stops when it fails.
+fn remove_from_pc(delete_data: bool) -> i32 {
+    let data = app_data_dir();
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(|p| p.to_path_buf()));
+    let changes: Vec<StatuslineChange> = match (&data, &exe_dir) {
+        (Some(d), Some(exe_dir)) => {
+            statusline_installer(d, exe_dir, ConfigFolder::discover_default())
+        }
+        _ => None,
+    }
+    .into_iter()
+    .map(StatuslineChange::new)
+    .collect();
+    let changes: Vec<&dyn OutsideChange> = changes.iter().map(|c| c as _).collect();
+    cli::remove_from_pc(&CurrentUserRegistry, &changes, data.as_deref(), delete_data)
+}
+
+fn run_tray() {
     let data = app_data_dir();
     // One instance per session (and app-data folder); a second launch just exits.
     let _instance = match &data {
@@ -27,6 +60,8 @@ fn main() {
         },
         None => None,
     };
+    // Tells the installer a tray is running, whatever its data folder.
+    let _running = RunningMarker::hold(RUNNING_MUTEX);
 
     let clock = Arc::new(SystemClock);
     if let Some(dir) = &data {

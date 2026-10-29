@@ -8,9 +8,9 @@ use std::path::Path;
 use std::rc::Rc;
 
 use uqt_ui::lifecycle::{
-    APP_ID, AUMID_KEY, Autostart, MemoryRegistry, OutsideChange, RUN_KEY, Registry, SingleInstance,
-    instance_name, register_notifications, removal_question, remove_from_pc,
-    remove_from_pc_undoing,
+    APP_ID, AUMID_KEY, Autostart, MemoryRegistry, OutsideChange, RUN_KEY, RUNNING_MUTEX, Registry,
+    RunningMarker, SingleInstance, installed_uninstaller, instance_name, register_notifications,
+    removal_question, remove_from_pc, remove_from_pc_undoing,
 };
 
 const EXE: &str = r"C:\Tools\UsageQuotaTray\usagequotatray.exe";
@@ -233,4 +233,46 @@ fn the_instance_name_is_per_data_folder_and_ignores_case() {
     assert_eq!(a, b);
     assert_ne!(a, c);
     assert!(a.starts_with("Local\\UsageQuotaTray-"));
+}
+
+#[test]
+fn the_running_marker_has_the_name_the_installer_waits_on() {
+    assert_eq!(RUNNING_MUTEX, "UsageQuotaTray.Running");
+}
+
+#[test]
+fn every_running_instance_holds_the_marker_until_it_exits() {
+    let name = format!("UsageQuotaTray-test-running-{}", std::process::id());
+    let first = RunningMarker::hold(&name).expect("first instance");
+    let second = RunningMarker::hold(&name).expect("an instance for another data folder");
+    // The installer's check: does a mutex with that name exist?
+    assert!(SingleInstance::acquire(&name).is_none());
+    drop(first);
+    assert!(SingleInstance::acquire(&name).is_none());
+    drop(second);
+    assert!(SingleInstance::acquire(&name).is_some());
+}
+
+#[test]
+fn an_installed_copy_is_recognised_by_the_uninstaller_next_to_the_exe() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("usagequotatray.exe"), b"").unwrap();
+    assert_eq!(installed_uninstaller(dir.path()), None);
+
+    std::fs::write(dir.path().join("unins000.dat"), b"").unwrap();
+    std::fs::write(dir.path().join("uninstall-notes.exe"), b"").unwrap();
+    std::fs::create_dir(dir.path().join("unins001.exe")).unwrap();
+    assert_eq!(installed_uninstaller(dir.path()), None);
+
+    std::fs::write(dir.path().join("UNINS000.EXE"), b"").unwrap();
+    assert_eq!(
+        installed_uninstaller(dir.path()),
+        Some(dir.path().join("UNINS000.EXE"))
+    );
+}
+
+#[test]
+fn a_missing_folder_has_no_uninstaller() {
+    let dir = tempfile::tempdir().unwrap();
+    assert_eq!(installed_uninstaller(&dir.path().join("gone")), None);
 }
