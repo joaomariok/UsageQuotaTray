@@ -1,5 +1,14 @@
-# Smoke test for the installer: a silent install into a throwaway folder with
-# "Start with Windows", checks, then a silent uninstall, checks, cleanup.
+# Smoke test for the installer, all silent, in a throwaway folder:
+#   1. a fresh install with "Start with Windows";
+#   2. a tray started from that install, then an upgrade over it: Setup closes it with
+#      --quit, keeps the Run value, and starts the installed tray again;
+#   3. Start with Windows turned off (the Run value deleted, as the app's toggle does),
+#      then another upgrade over the running tray: the value stays off;
+#   4. an uninstall whose --remove-from-pc fails (the sandbox Claude Code settings run
+#      the installed statusline helper and cannot be written): it stops, removes
+#      nothing, and the statusLine is unchanged;
+#   5. the uninstall again once the settings can be written: the statusLine is put
+#      back and everything is gone.
 #
 #   pwsh tools/installer/smoke.ps1 [-Setup <path to UsageQuotaTray-Setup-<version>.exe>]
 #
@@ -7,13 +16,15 @@
 #   - HKCU\...\CurrentVersion\Run value UsageQuotaTray (created, then removed)
 #   - HKCU\...\CurrentVersion\Uninstall\{9C02A488-...}_is1 (created, then removed)
 #   - the Start menu shortcut <Programs>\UsageQuotaTray.lnk (created, then removed)
-#   - HKCU\Software\Classes\AppUserModelId\UsageQuotaTray: the uninstaller's
-#     "--remove-from-pc" deletes it, so it is exported first and imported back.
+#   - HKCU\Software\Classes\AppUserModelId\UsageQuotaTray: the running tray registers
+#     it and "--remove-from-pc" deletes it, so it is exported first and imported back.
 # It refuses to run when the Run value, the Apps entry or the shortcut already exist,
-# or when a tray is running. The tray is never started. The uninstaller runs with
-# LOCALAPPDATA, USERPROFILE and CLAUDE_CONFIG_DIR pointed at the throwaway folder, so
-# the real app data and Claude Code's settings.json are not read or written; both are
-# fingerprinted before and after to prove it.
+# or when a tray is running. Setup, the uninstaller and the tray run with LOCALAPPDATA
+# and CLAUDE_CONFIG_DIR pointed at the throwaway folder (the tray has no credentials
+# there, so it calls no server; CLAUDE_CONFIG_DIR wins over USERPROFILE, which stays
+# real because Windows expands the Start menu folder from it), so the real app data and
+# Claude Code's settings.json are not read or written; both are fingerprinted before
+# and after to prove it. Any tray started from the throwaway folder is stopped at the end.
 [CmdletBinding()]
 param(
     [string]$Setup
@@ -70,6 +81,51 @@ function Test-TrayRunning {
     return $false
 }
 
+# The tray processes started from the throwaway folder.
+function Get-SandboxTray {
+    @(Get-Process -Name 'usagequotatray' -ErrorAction SilentlyContinue |
+        Where-Object { $_.Path -and $_.Path.StartsWith($work, [StringComparison]::OrdinalIgnoreCase) })
+}
+
+function Wait-Until([scriptblock]$condition, [int]$seconds) {
+    $deadline = (Get-Date).AddSeconds($seconds)
+    while (-not (& $condition) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 250 }
+    & $condition
+}
+
+# Runs $action with the sandbox environment, which child processes inherit.
+function Invoke-Sandboxed([scriptblock]$action) {
+    $saved = @{}
+    foreach ($k in $sandbox.Keys) { $saved[$k] = [Environment]::GetEnvironmentVariable($k); [Environment]::SetEnvironmentVariable($k, $sandbox[$k]) }
+    try { & $action }
+    finally { foreach ($k in $saved.Keys) { [Environment]::SetEnvironmentVariable($k, $saved[$k]) } }
+}
+
+# Starts $file and waits for it alone: Start-Process -Wait would also wait for the
+# tray Setup starts again.
+function Invoke-Waited([string]$file, [string[]]$arguments) {
+    $info = [System.Diagnostics.ProcessStartInfo]::new($file, ($arguments -join ' '))
+    $info.UseShellExecute = $false
+    $p = Invoke-Sandboxed { [System.Diagnostics.Process]::Start($info) }
+    $p.WaitForExit()
+    $p.ExitCode
+}
+
+function Invoke-Setup([string]$log, [string[]]$extra) {
+    Invoke-Waited $Setup (@('/VERYSILENT', '/SUPPRESSMSGBOXES', '/CURRENTUSER', '/NORESTART', "/DIR=`"$dir`"", "/LOG=`"$log`"") + $extra)
+}
+
+# The uninstaller returns before its copy in %TEMP% finishes; wait for its log to end.
+function Invoke-Uninstall([string]$log) {
+    $code = Invoke-Waited (Join-Path $dir 'unins000.exe') @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=`"$log`"")
+    $null = Wait-Until { (Test-Path -LiteralPath $log) -and ((Get-Content -LiteralPath $log -Raw) -match 'Log closed\.') } 60
+    $code
+}
+
+function Read-Log([string]$log) {
+    if (Test-Path -LiteralPath $log) { Get-Content -LiteralPath $log -Raw } else { '' }
+}
+
 if (-not $Setup) {
     $found = Get-ChildItem -LiteralPath (Join-Path $root 'dist') -Filter 'UsageQuotaTray-Setup-*.exe' -ErrorAction SilentlyContinue |
         Sort-Object LastWriteTime -Descending | Select-Object -First 1
@@ -83,7 +139,8 @@ $existing = Get-RunValue
 if ($null -ne $existing) { throw "Aborting: the Run value UsageQuotaTray already exists ($existing)." }
 if (Test-Path -LiteralPath $appsKey) { throw "Aborting: UsageQuotaTray is already installed ($appsKey)." }
 if (Test-Path -LiteralPath $shortcut) { throw "Aborting: $shortcut already exists." }
-# Any running copy (older ones hold no marker) would write the real app data meanwhile.
+# Any running copy (older ones hold no marker) would write the real app data meanwhile,
+# and the upgrade's --quit would close it.
 if ((Test-TrayRunning) -or (Get-Process -Name 'usagequotatray' -ErrorAction SilentlyContinue)) {
     throw 'Aborting: UsageQuotaTray is running; exit it first.'
 }
@@ -92,11 +149,12 @@ $work = Join-Path ([System.IO.Path]::GetTempPath()) ('uqt-smoke-' + [guid]::NewG
 $dir = Join-Path $work 'app'
 $sandbox = @{
     LOCALAPPDATA      = Join-Path $work 'localappdata'
-    USERPROFILE       = Join-Path $work 'profile'
-    CLAUDE_CONFIG_DIR = Join-Path $work 'profile\.claude'
+    CLAUDE_CONFIG_DIR = Join-Path $work 'claude'
 }
 New-Item -ItemType Directory -Path $work | Out-Null
 $sandbox.Values | ForEach-Object { New-Item -ItemType Directory -Force -Path $_ | Out-Null }
+$exe = Join-Path $dir 'usagequotatray.exe'
+$sandboxSettings = Join-Path $sandbox.CLAUDE_CONFIG_DIR 'settings.json'
 
 $aumidBefore = Get-KeyValues $aumidKey
 $aumidBackup = Join-Path $work 'aumid.reg'
@@ -108,19 +166,13 @@ $dataBefore = Get-Fingerprint @($realData)
 $claudeBefore = Get-Fingerprint $claudeFiles
 "Before: AppUserModelId key: $aumidBefore"
 
-$setupLog = Join-Path $work 'setup.log'
-$uninstallLog = Join-Path $work 'uninstall.log'
 try {
-    # Install.
-    $p = Start-Process -FilePath $Setup -Wait -PassThru -ArgumentList @(
-        '/VERYSILENT', '/SUPPRESSMSGBOXES', '/CURRENTUSER', '/NORESTART',
-        '/TASKS="startwithwindows"', "/DIR=`"$dir`"", "/LOG=`"$setupLog`"")
-    "Install exit code: $($p.ExitCode)"
-    Check ($p.ExitCode -eq 0) 'setup exits 0'
+    '1. Fresh install with Start with Windows'
+    $code = Invoke-Setup (Join-Path $work 'setup-1.log') @('/TASKS="startwithwindows"')
+    Check ($code -eq 0) "setup exits 0 ($code)"
     foreach ($f in 'usagequotatray.exe', 'uqt-statusline.exe', 'LICENSE', 'unins000.exe') {
         Check (Test-Path -LiteralPath (Join-Path $dir $f)) "installed $f"
     }
-    $exe = Join-Path $dir 'usagequotatray.exe'
     Check ((Get-RunValue) -eq "`"$exe`"") "Run value is the quoted exe path ($(Get-RunValue))"
     Check (Test-Path -LiteralPath $shortcut) "Start menu shortcut $shortcut"
     if (Test-Path -LiteralPath $shortcut) {
@@ -131,38 +183,76 @@ try {
     if (Test-Path -LiteralPath $appsKey) {
         Check ((Get-ItemProperty -LiteralPath $appsKey).DisplayName -eq 'UsageQuotaTray') 'Apps entry is named UsageQuotaTray'
     }
-    Check (-not (Test-TrayRunning) -and -not (Get-Process -Name 'usagequotatray' -ErrorAction SilentlyContinue)) 'the tray was not started'
+    Check (-not (Test-TrayRunning) -and @(Get-SandboxTray).Count -eq 0) 'the tray was not started'
 
-    # Uninstall, sandboxed. The exit code comes back before the uninstaller's clone
-    # finishes, so wait for the Apps entry and the uninstaller to disappear.
-    $saved = @{}
-    foreach ($k in $sandbox.Keys) { $saved[$k] = [Environment]::GetEnvironmentVariable($k); [Environment]::SetEnvironmentVariable($k, $sandbox[$k]) }
-    try {
-        $p = Start-Process -FilePath (Join-Path $dir 'unins000.exe') -Wait -PassThru -ArgumentList @(
-            '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=`"$uninstallLog`"")
+    '2. Upgrade over a running tray'
+    Invoke-Sandboxed { Start-Process -FilePath $exe | Out-Null }
+    Check (Wait-Until { Test-TrayRunning } 15) 'tray started from the install holds UsageQuotaTray.Running'
+    $before = @(Get-SandboxTray | ForEach-Object Id)
+    $log = Join-Path $work 'setup-2.log'
+    $code = Invoke-Setup $log @()
+    Check ($code -eq 0) "upgrade exits 0 ($code)"
+    Check ((Read-Log $log) -match 'usagequotatray\.exe --quit exited with 0') 'Setup closed the tray with --quit (exit 0)'
+    Check (Wait-Until { @(Get-SandboxTray).Count -eq 1 -and (Test-TrayRunning) } 15) 'the installed tray runs again'
+    Check (@(Get-SandboxTray | Where-Object { $before -contains $_.Id }).Count -eq 0) 'it is a new process'
+    Check ((Get-RunValue) -eq "`"$exe`"") "Start with Windows still on ($(Get-RunValue))"
+
+    '3. Start with Windows off, then upgrade'
+    Remove-ItemProperty -LiteralPath $runKey -Name 'UsageQuotaTray'
+    $log = Join-Path $work 'setup-3.log'
+    $code = Invoke-Setup $log @()
+    Check ($code -eq 0) "upgrade exits 0 ($code)"
+    Check ((Read-Log $log) -match 'usagequotatray\.exe --quit exited with 0') 'Setup closed the tray with --quit (exit 0)'
+    Check ($null -eq (Get-RunValue)) 'Start with Windows still off'
+    Check (Wait-Until { @(Get-SandboxTray).Count -eq 1 } 15) 'the installed tray runs again'
+
+    '4. Uninstall whose removal fails'
+    $helper = (Join-Path $dir 'uqt-statusline.exe').Replace('\', '/')
+    if ($helper -match '[^A-Za-z0-9/:._~-]') { throw "Aborting: the helper path needs quoting ($helper)." }
+    $settingsText = "{`"statusLine`": {`"type`": `"command`", `"command`": `"$helper`"}}`n"
+    [System.IO.File]::WriteAllText($sandboxSettings, $settingsText)
+    # The installer writes settings.uqt-tmp and renames it over settings.json; a folder
+    # by that name makes the write fail, so the statusLine cannot be put back.
+    $blocker = Join-Path $sandbox.CLAUDE_CONFIG_DIR 'settings.uqt-tmp'
+    New-Item -ItemType Directory -Path $blocker | Out-Null
+    Remove-ItemProperty -LiteralPath $runKey -Name 'UsageQuotaTray' -ErrorAction SilentlyContinue
+    Set-ItemProperty -LiteralPath $runKey -Name 'UsageQuotaTray' -Value "`"$exe`""
+    $log = Join-Path $work 'uninstall-1.log'
+    $code = Invoke-Uninstall $log
+    "  uninstaller exit code: $code"
+    $text = Read-Log $log
+    Check ($text -match 'usagequotatray\.exe --quit exited with 0') 'the uninstaller closed the tray with --quit (exit 0)'
+    Check ($text -match 'usagequotatray\.exe --remove-from-pc exited with 1') '--remove-from-pc exited 1'
+    Check ($text -match 'Uninstall stopped: UsageQuotaTray could not put') 'the uninstaller stopped with the message'
+    Check (Test-Path -LiteralPath $appsKey) 'Apps entry kept'
+    foreach ($f in 'usagequotatray.exe', 'uqt-statusline.exe', 'LICENSE', 'unins000.exe') {
+        Check (Test-Path -LiteralPath (Join-Path $dir $f)) "kept $f"
     }
-    finally {
-        foreach ($k in $saved.Keys) { [Environment]::SetEnvironmentVariable($k, $saved[$k]) }
-    }
-    "Uninstall exit code: $($p.ExitCode)"
-    Check ($p.ExitCode -eq 0) 'uninstaller exits 0'
-    $deadline = (Get-Date).AddSeconds(60)
-    while (((Test-Path -LiteralPath $appsKey) -or (Test-Path -LiteralPath (Join-Path $dir 'unins000.exe'))) -and (Get-Date) -lt $deadline) {
-        Start-Sleep -Milliseconds 250
-    }
+    Check (Test-Path -LiteralPath $shortcut) 'shortcut kept'
+    Check ((Get-RunValue) -eq "`"$exe`"") 'Run value kept'
+    Check ([System.IO.File]::ReadAllText($sandboxSettings) -eq $settingsText) 'sandbox statusLine unchanged'
+    Check (@(Get-SandboxTray).Count -eq 0) 'no tray running'
+
+    '5. Uninstall again'
+    Remove-Item -LiteralPath $blocker
+    $log = Join-Path $work 'uninstall-2.log'
+    $code = Invoke-Uninstall $log
+    Check ($code -eq 0) "uninstaller exits 0 ($code)"
+    $null = Wait-Until { -not (Test-Path -LiteralPath $appsKey) -and -not (Test-Path -LiteralPath (Join-Path $dir 'unins000.exe')) } 60
     Start-Sleep -Seconds 1
-    $log = if (Test-Path -LiteralPath $uninstallLog) { Get-Content -LiteralPath $uninstallLog -Raw } else { '' }
-    Check ($log -match 'usagequotatray\.exe --remove-from-pc exited with 0') 'uninstaller ran --remove-from-pc (exit 0)'
+    Check ((Read-Log $log) -match 'usagequotatray\.exe --remove-from-pc exited with 0') 'uninstaller ran --remove-from-pc (exit 0)'
+    Check (-not ([System.IO.File]::ReadAllText($sandboxSettings) -match 'statusLine')) 'sandbox statusLine put back (removed)'
     Check ($null -eq (Get-RunValue)) 'Run value removed'
     Check (-not (Test-Path -LiteralPath $aumidKey)) 'AppUserModelId key removed by --remove-from-pc'
     Check (-not (Test-Path -LiteralPath $appsKey)) 'Apps entry removed'
     Check (-not (Test-Path -LiteralPath $shortcut)) 'shortcut removed'
     $left = @(if (Test-Path -LiteralPath $dir) { Get-ChildItem -LiteralPath $dir -Recurse -Force })
     Check ($left.Count -eq 0) "installed files removed ($($left.Count) left)"
-    Check (-not (Test-Path -LiteralPath (Join-Path $sandbox.LOCALAPPDATA 'UsageQuotaTray'))) 'sandbox app data untouched'
+    Check (Test-Path -LiteralPath (Join-Path $sandbox.LOCALAPPDATA 'UsageQuotaTray')) 'sandbox app data kept (delete data defaults to No)'
 }
 finally {
     # Put back what this run changed, whatever happened above.
+    foreach ($p in Get-SandboxTray) { Stop-Process -Id $p.Id -Force; "  cleanup: stopped tray $($p.Id)" }
     if ($null -ne (Get-RunValue)) { Remove-ItemProperty -LiteralPath $runKey -Name 'UsageQuotaTray'; '  cleanup: removed Run value' }
     if (Test-Path -LiteralPath $appsKey) { Remove-Item -LiteralPath $appsKey -Recurse; '  cleanup: removed Apps entry' }
     if (Test-Path -LiteralPath $shortcut) { Remove-Item -LiteralPath $shortcut; '  cleanup: removed shortcut' }
@@ -174,10 +264,14 @@ finally {
     elseif (Test-Path -LiteralPath $aumidKey) { Remove-Item -LiteralPath $aumidKey -Recurse; '  cleanup: removed AppUserModelId key' }
 }
 
+'Final state'
 Check ((Get-KeyValues $aumidKey) -eq $aumidBefore) "AppUserModelId key as before ($(Get-KeyValues $aumidKey))"
 Check (((Get-Fingerprint @($realData)) -join "`n") -eq ($dataBefore -join "`n")) "real $realData untouched"
 Check (((Get-Fingerprint $claudeFiles) -join "`n") -eq ($claudeBefore -join "`n")) "Claude Code settings.json untouched ($($claudeFiles -join ', '))"
 Check ($null -eq (Get-RunValue)) 'Run value absent, as before'
+Check (-not (Test-Path -LiteralPath $appsKey)) 'Apps entry absent, as before'
+Check (-not (Test-Path -LiteralPath $shortcut)) 'shortcut absent, as before'
+Check (-not (Test-TrayRunning)) 'no tray running, as before'
 
 if ($failures.Count -eq 0) {
     Remove-Item -LiteralPath $work -Recurse -Force

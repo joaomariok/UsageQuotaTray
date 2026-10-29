@@ -214,6 +214,15 @@ impl Installer {
         command == Some(forms.bash.as_str()) || command == Some(forms.powershell.as_str())
     }
 
+    /// The recorded `statusLine` command when the installation record in the app-data
+    /// folder is another copy's helper (a zip copy beside the installed one, say): that
+    /// copy's helper still reads the record, and this copy cannot undo it. Read only.
+    pub fn record_of_another_helper(&self) -> Option<String> {
+        let record = Record::read(&self.state_file)?;
+        let command = json!({ "command": record.command });
+        (!self.is_helper(&command)).then_some(record.command)
+    }
+
     pub fn status(&self) -> Status {
         if self.helper_forms().is_err() {
             return Status::NotInstalled;

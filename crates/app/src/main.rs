@@ -16,7 +16,8 @@ use uqt_core::push::pipe_name;
 use uqt_core::settings::SettingsStore;
 use uqt_core::time::SystemClock;
 use uqt_ui::lifecycle::{
-    CurrentUserRegistry, OutsideChange, RUNNING_MUTEX, RunningMarker, SingleInstance, instance_name,
+    CurrentUserRegistry, OutsideChange, QUIT_EVENT, RUNNING_MUTEX, RunningMarker, SingleInstance,
+    instance_name,
 };
 use uqt_ui::{DevHooks, ShellOptions};
 
@@ -25,6 +26,9 @@ fn main() {
         Ok(Command::Tray) => run_tray(),
         Ok(Command::RemoveFromPc { delete_data }) => {
             std::process::exit(remove_from_pc(delete_data))
+        }
+        Ok(Command::Quit) => {
+            std::process::exit(cli::quit(QUIT_EVENT, RUNNING_MUTEX, cli::QUIT_TIMEOUT))
         }
         Err(_) => std::process::exit(cli::EXIT_USAGE),
     }

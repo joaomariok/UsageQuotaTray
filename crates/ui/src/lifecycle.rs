@@ -5,17 +5,23 @@
 
 use std::collections::BTreeMap;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::{
-    CloseHandle, ERROR_ALREADY_EXISTS, ERROR_FILE_NOT_FOUND, GetLastError, HANDLE, WIN32_ERROR,
+    CloseHandle, ERROR_ALREADY_EXISTS, ERROR_FILE_NOT_FOUND, GetLastError, HANDLE, WAIT_OBJECT_0,
+    WIN32_ERROR,
 };
 use windows::Win32::System::Registry::{
     HKEY, HKEY_CURRENT_USER, KEY_SET_VALUE, REG_OPTION_NON_VOLATILE, REG_SZ, RRF_RT_REG_SZ,
     RegCloseKey, RegCreateKeyExW, RegDeleteKeyValueW, RegDeleteTreeW, RegGetValueW, RegSetValueExW,
 };
-use windows::Win32::System::Threading::CreateMutexW;
+use windows::Win32::System::Threading::{
+    CreateEventW, CreateMutexW, INFINITE, OpenMutexW, ResetEvent, SYNCHRONIZATION_SYNCHRONIZE,
+    SetEvent, WaitForMultipleObjects,
+};
 use windows::core::{HSTRING, PCWSTR};
 
 /// The Run value name, the AppUserModelID and the notification display name.
@@ -214,6 +220,12 @@ pub trait OutsideChange: std::fmt::Debug {
     fn pending(&self) -> Option<String>;
     /// Undoes it. The error is shown to the user.
     fn undo(&self) -> Result<(), String>;
+    /// A file in the app-data folder that deleting the data must keep, with why: it
+    /// records a change this copy did not undo that something else still relies on
+    /// (another copy's statusline helper). `None` when nothing needs keeping.
+    fn kept_in_data(&self) -> Option<(PathBuf, String)> {
+        None
+    }
 }
 
 /// The confirmation for "Remove UsageQuotaTray from this PC": what is undone first,
@@ -244,7 +256,7 @@ pub fn remove_from_pc(
     data_dir: Option<&Path>,
     delete_data: bool,
 ) -> io::Result<()> {
-    delete_entries(registry, data_dir, delete_data)
+    delete_entries(registry, data_dir, delete_data, &[]).map(|_| ())
 }
 
 /// Why a removal stopped.
@@ -267,7 +279,9 @@ impl std::fmt::Display for RemovalError {
 
 /// [`remove_from_pc`] after undoing `changes` that have something pending. When one
 /// cannot be undone nothing is deleted, so the user can fix it and try again while
-/// the app (and its record of the change) is still there.
+/// the app (and its record of the change) is still there. Deleting the data keeps the
+/// files a change still needs ([`OutsideChange::kept_in_data`]), and then says so as
+/// a partial removal.
 pub fn remove_from_pc_undoing(
     registry: &dyn Registry,
     changes: &[&dyn OutsideChange],
@@ -277,23 +291,53 @@ pub fn remove_from_pc_undoing(
     for change in changes.iter().filter(|c| c.pending().is_some()) {
         change.undo().map_err(RemovalError::NotUndone)?;
     }
-    delete_entries(registry, data_dir, delete_data).map_err(RemovalError::Partly)
+    let keep: Vec<(PathBuf, String)> = changes.iter().filter_map(|c| c.kept_in_data()).collect();
+    match delete_entries(registry, data_dir, delete_data, &keep) {
+        Ok(kept) if kept.is_empty() => Ok(()),
+        Ok(kept) => Err(RemovalError::Partly(io::Error::other(kept.join("; ")))),
+        Err(e) => Err(RemovalError::Partly(e)),
+    }
 }
 
+/// Deletes the entries and, when asked, the data folder except the files in `keep`
+/// that are in it, returning why each kept file was kept.
 fn delete_entries(
     registry: &dyn Registry,
     data_dir: Option<&Path>,
     delete_data: bool,
-) -> io::Result<()> {
+    keep: &[(PathBuf, String)],
+) -> io::Result<Vec<String>> {
     registry.delete_value(RUN_KEY, APP_ID)?;
     registry.delete_tree(AUMID_KEY)?;
-    if delete_data
-        && let Some(dir) = data_dir
-        && dir.exists()
-    {
+    let Some(dir) = data_dir.filter(|d| delete_data && d.exists()) else {
+        return Ok(Vec::new());
+    };
+    let same =
+        |a: &Path, b: &Path| fold(&a.display().to_string()) == fold(&b.display().to_string());
+    let keep: Vec<&(PathBuf, String)> = keep
+        .iter()
+        .filter(|(file, _)| file.parent().is_some_and(|p| same(p, dir)) && file.exists())
+        .collect();
+    if keep.is_empty() {
         std::fs::remove_dir_all(dir)?;
+        return Ok(Vec::new());
     }
-    Ok(())
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if keep.iter().any(|(file, _)| same(file, &path)) {
+            continue;
+        }
+        if entry.file_type()?.is_dir() {
+            std::fs::remove_dir_all(&path)?;
+        } else {
+            std::fs::remove_file(&path)?;
+        }
+    }
+    Ok(keep
+        .iter()
+        .map(|(file, why)| format!("kept {} because {why}", file.display()))
+        .collect())
 }
 
 /// The single-instance name for a data folder: one instance per session and folder, so
@@ -357,27 +401,145 @@ impl Drop for RunningMarker {
     }
 }
 
-/// The installer's uninstaller (`unins000.exe`, or another three-digit number) in
-/// `exe_dir`, when this copy was installed rather than unzipped.
-pub fn installed_uninstaller(exe_dir: &Path) -> Option<std::path::PathBuf> {
-    let mut found: Vec<_> = std::fs::read_dir(exe_dir)
-        .ok()?
-        .filter_map(Result::ok)
-        .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
-        .map(|e| e.path())
-        .filter(|p| {
-            p.file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(is_uninstaller_name)
-        })
-        .collect();
-    found.sort();
-    found.into_iter().next()
+/// The event `usagequotatray.exe --quit` sets to ask every running tray to exit, as the
+/// installer does before an upgrade or uninstall. Unprefixed like [`RUNNING_MUTEX`], so
+/// it lives in this session's namespace: only trays in the same session see it.
+pub const QUIT_EVENT: &str = "UsageQuotaTray.Quit";
+
+/// A handle that moves to the listener thread (a `HANDLE` is a raw pointer).
+struct SendHandle(HANDLE);
+// SAFETY: a kernel handle may be used from any thread.
+unsafe impl Send for SendHandle {}
+
+fn quit_event(name: &str) -> io::Result<HANDLE> {
+    // Manual reset: one request wakes every tray, until the requester resets it.
+    unsafe { CreateEventW(None, true, false, &HSTRING::from(name)) }.map_err(io::Error::other)
 }
 
-fn is_uninstaller_name(name: &str) -> bool {
-    let name = fold(name);
-    name.strip_prefix("unins")
-        .and_then(|rest| rest.strip_suffix(".exe"))
-        .is_some_and(|n| n.len() == 3 && n.bytes().all(|b| b.is_ascii_digit()))
+/// Waits on a thread for a quit request ([`request_quit`]) and calls `on_quit` once.
+/// Dropping it stops the wait without calling `on_quit`.
+pub struct QuitListener {
+    stop: HANDLE,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl QuitListener {
+    pub fn spawn(event: &str, on_quit: impl FnOnce() + Send + 'static) -> io::Result<Self> {
+        let quit = SendHandle(quit_event(event)?);
+        let stop = match unsafe { CreateEventW(None, true, false, PCWSTR::null()) } {
+            Ok(stop) => stop,
+            Err(e) => {
+                unsafe {
+                    let _ = CloseHandle(quit.0);
+                }
+                return Err(io::Error::other(e));
+            }
+        };
+        let stop_for_thread = SendHandle(stop);
+        let thread = std::thread::spawn(move || {
+            let (quit, stop) = (quit, stop_for_thread);
+            let woke = unsafe { WaitForMultipleObjects(&[quit.0, stop.0], false, INFINITE) };
+            unsafe {
+                let _ = CloseHandle(quit.0);
+            }
+            if woke == WAIT_OBJECT_0 {
+                on_quit();
+            }
+        });
+        Ok(Self {
+            stop,
+            thread: Some(thread),
+        })
+    }
+}
+
+impl Drop for QuitListener {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = SetEvent(self.stop);
+        }
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+        unsafe {
+            let _ = CloseHandle(self.stop);
+        }
+    }
+}
+
+/// What [`request_quit`] found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QuitOutcome {
+    /// No tray held the running marker.
+    NoneRunning,
+    /// Every tray exited.
+    Closed,
+    /// A tray still held the running marker when the time was up.
+    StillRunning,
+}
+
+/// Whether any process holds the named mutex (what the installer's `AppMutex` checks).
+fn mutex_exists(name: &str) -> bool {
+    match unsafe { OpenMutexW(SYNCHRONIZATION_SYNCHRONIZE, false, &HSTRING::from(name)) } {
+        Ok(handle) => {
+            unsafe {
+                let _ = CloseHandle(handle);
+            }
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// Asks every tray in this session to exit (sets `event`) and waits up to `timeout`
+/// for the `running` marker to be released. The request is withdrawn afterwards, so a
+/// tray started later does not see it.
+pub fn request_quit(event: &str, running: &str, timeout: Duration) -> QuitOutcome {
+    if !mutex_exists(running) {
+        return QuitOutcome::NoneRunning;
+    }
+    let Ok(handle) = quit_event(event) else {
+        return QuitOutcome::StillRunning;
+    };
+    unsafe {
+        let _ = SetEvent(handle);
+    }
+    let started = Instant::now();
+    let outcome = loop {
+        if !mutex_exists(running) {
+            break QuitOutcome::Closed;
+        }
+        if started.elapsed() >= timeout {
+            break QuitOutcome::StillRunning;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    unsafe {
+        let _ = ResetEvent(handle);
+        let _ = CloseHandle(handle);
+    }
+    outcome
+}
+
+/// The Apps & features entry Inno Setup writes for the installer's AppId
+/// (`tools/installer/UsageQuotaTray.iss`): `<AppId>_is1` under the per-user Uninstall key.
+pub const UNINSTALL_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\{9C02A488-5E56-4016-835D-BE4F735473FD}_is1";
+
+/// The installer's uninstaller, when this copy in `exe_dir` is the installed one: the
+/// Apps entry for our AppId names `exe_dir` as its `InstallLocation`, and the file its
+/// `UninstallString` starts is there. A zip copy elsewhere has none, whatever it holds.
+pub fn installed_uninstaller(registry: &dyn Registry, exe_dir: &Path) -> Option<PathBuf> {
+    let location = registry.read_string(UNINSTALL_KEY, "InstallLocation")?;
+    let trimmed = |p: &str| fold(p.trim().trim_end_matches(['\\', '/']));
+    if trimmed(&location) != trimmed(&exe_dir.display().to_string()) {
+        return None;
+    }
+    let command = registry.read_string(UNINSTALL_KEY, "UninstallString")?;
+    let command = command.trim();
+    let path = match command.strip_prefix('"') {
+        Some(rest) => &rest[..rest.find('"')?],
+        None => command.split(' ').next()?,
+    };
+    let path = PathBuf::from(path);
+    path.is_file().then_some(path)
 }

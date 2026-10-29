@@ -6,13 +6,13 @@ use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use uqt_app::{HELPER_EXE, StatuslineChange, run_statusline_helper, statusline_installer};
+use uqt_app::{HELPER_EXE, StatuslineChange, cli, run_statusline_helper, statusline_installer};
 use uqt_assistant_anthropic::statusline::chain::Shell;
 use uqt_assistant_anthropic::statusline::installer::Installer;
 use uqt_assistant_anthropic::{ConfigFolder, ID, sources};
 use uqt_core::push::{PushServer, pipe_name};
 use uqt_core::time::Timestamp;
-use uqt_ui::lifecycle::OutsideChange;
+use uqt_ui::lifecycle::{MemoryRegistry, OutsideChange};
 
 const INPUT: &str = r#"{"model": {"display_name": "Opus"},
   "rate_limits": {"five_hour": {"used_percentage": 23.5, "resets_at": 1793285400},
@@ -163,4 +163,55 @@ fn the_install_button_is_offered_only_when_the_helper_ships_beside_the_app() {
     assert_eq!(installer.settings_file, d.folder.dir.join("settings.json"));
     assert!(installer.state_file.starts_with(&d.data));
     assert_eq!(statusline_installer(&d.data, &exe_dir, None), None);
+}
+
+#[test]
+fn deleting_the_data_keeps_the_record_of_another_copys_helper() {
+    let d = dirs();
+    let settings = d.folder.dir.join("settings.json");
+    std::fs::write(&settings, "{}").unwrap();
+    let zip_copy = Installer::new(
+        &d.folder,
+        &d.data,
+        PathBuf::from(r"D:\Portable\uqt-statusline.exe"),
+    );
+    zip_copy.install(Timestamp(0)).unwrap();
+    let claude_settings = std::fs::read_to_string(&settings).unwrap();
+    std::fs::write(d.data.join("settings.json"), "{}").unwrap();
+    std::fs::create_dir_all(d.data.join("logs")).unwrap();
+    let installed = StatuslineChange::new(Installer::new(
+        &d.folder,
+        &d.data,
+        PathBuf::from(r"C:\Apps\uqt-statusline.exe"),
+    ));
+    let reg = MemoryRegistry::new();
+
+    let code = cli::remove_from_pc(&reg, &[&installed], Some(&d.data), true);
+
+    assert_eq!(code, cli::EXIT_PARTLY);
+    assert!(d.data.join("statusline.json").exists());
+    assert!(!d.data.join("settings.json").exists());
+    assert!(!d.data.join("logs").exists());
+    assert_eq!(std::fs::read_to_string(&settings).unwrap(), claude_settings);
+    let (file, why) = installed.kept_in_data().expect("kept");
+    assert_eq!(file, d.data.join("statusline.json"));
+    assert!(why.contains("D:/Portable/uqt-statusline.exe"), "{why}");
+}
+
+#[test]
+fn deleting_the_data_after_undoing_its_own_helper_keeps_nothing() {
+    let d = dirs();
+    std::fs::write(d.folder.dir.join("settings.json"), "{}").unwrap();
+    let installer = Installer::new(
+        &d.folder,
+        &d.data,
+        PathBuf::from(r"C:\Apps\uqt-statusline.exe"),
+    );
+    installer.install(Timestamp(0)).unwrap();
+    let change = StatuslineChange::new(installer);
+
+    let code = cli::remove_from_pc(&MemoryRegistry::new(), &[&change], Some(&d.data), true);
+
+    assert_eq!(code, cli::EXIT_REMOVED);
+    assert!(!d.data.exists());
 }

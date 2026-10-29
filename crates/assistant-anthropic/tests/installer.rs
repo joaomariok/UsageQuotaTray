@@ -454,3 +454,24 @@ mod from_settings {
         );
     }
 }
+
+#[test]
+fn a_record_of_another_copys_helper_is_reported_and_its_own_is_not() {
+    let files = Files::new(Some(ORIGINAL));
+    let ours = &files.installer;
+    let other = Installer {
+        helper: PathBuf::from(r"D:\Portable\UsageQuotaTray\uqt-statusline.exe"),
+        ..ours.clone()
+    };
+    assert_eq!(ours.record_of_another_helper(), None, "no record yet");
+
+    other.install(Timestamp(0)).unwrap();
+    assert_eq!(
+        ours.record_of_another_helper().as_deref(),
+        Some("D:/Portable/UsageQuotaTray/uqt-statusline.exe")
+    );
+    assert_eq!(other.record_of_another_helper(), None);
+
+    other.uninstall().unwrap();
+    assert_eq!(ours.record_of_another_helper(), None, "the record is gone");
+}

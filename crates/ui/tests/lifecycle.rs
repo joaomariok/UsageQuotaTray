@@ -4,13 +4,15 @@
 
 use std::cell::RefCell;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use uqt_ui::lifecycle::{
-    APP_ID, AUMID_KEY, Autostart, MemoryRegistry, OutsideChange, RUN_KEY, RUNNING_MUTEX, Registry,
-    RunningMarker, SingleInstance, installed_uninstaller, instance_name, register_notifications,
-    removal_question, remove_from_pc, remove_from_pc_undoing,
+    APP_ID, AUMID_KEY, Autostart, MemoryRegistry, OutsideChange, QUIT_EVENT, QuitListener,
+    QuitOutcome, RUN_KEY, RUNNING_MUTEX, Registry, RemovalError, RunningMarker, SingleInstance,
+    UNINSTALL_KEY, installed_uninstaller, instance_name, register_notifications, removal_question,
+    remove_from_pc, remove_from_pc_undoing, request_quit,
 };
 
 const EXE: &str = r"C:\Tools\UsageQuotaTray\usagequotatray.exe";
@@ -119,6 +121,7 @@ struct FakeChange {
     fails: bool,
     undone_with_run_value: RefCell<Option<bool>>,
     registry: Rc<MemoryRegistry>,
+    keeps: Option<(PathBuf, String)>,
 }
 
 impl FakeChange {
@@ -128,7 +131,13 @@ impl FakeChange {
             fails,
             undone_with_run_value: RefCell::new(None),
             registry: registry.clone(),
+            keeps: None,
         }
+    }
+
+    fn keeping(mut self, file: PathBuf, why: &str) -> Self {
+        self.keeps = Some((file, why.to_string()));
+        self
     }
 }
 
@@ -146,6 +155,63 @@ impl OutsideChange for FakeChange {
             Ok(())
         }
     }
+
+    fn kept_in_data(&self) -> Option<(PathBuf, String)> {
+        self.keeps.clone()
+    }
+}
+
+#[test]
+fn deleting_the_data_keeps_a_record_another_copy_still_needs_and_says_why() {
+    let reg = Rc::new(MemoryRegistry::new());
+    Autostart::new(reg.as_ref(), Path::new(EXE))
+        .set(true)
+        .unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let data = parent.path().join("UsageQuotaTray");
+    std::fs::create_dir_all(data.join("logs")).unwrap();
+    std::fs::create_dir_all(data.join("badges")).unwrap();
+    std::fs::write(data.join("logs").join("a.log"), "line").unwrap();
+    std::fs::write(data.join("settings.json"), "{}").unwrap();
+    std::fs::write(data.join("statusline.json"), "{\"command\": \"x\"}").unwrap();
+    let change = FakeChange::new(&reg, None, false).keeping(
+        data.join("statusline.json"),
+        "another copy's statusline helper still uses it",
+    );
+
+    let error = remove_from_pc_undoing(reg.as_ref(), &[&change], Some(&data), true)
+        .expect_err("a partial removal");
+
+    assert!(matches!(error, RemovalError::Partly(_)), "{error:?}");
+    let text = error.to_string();
+    assert!(text.contains("statusline.json"), "{text}");
+    assert!(
+        text.contains("another copy's statusline helper still uses it"),
+        "{text}"
+    );
+    let left: Vec<_> = std::fs::read_dir(&data)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    assert_eq!(left, ["statusline.json"]);
+    assert_eq!(
+        std::fs::read_to_string(data.join("statusline.json")).unwrap(),
+        "{\"command\": \"x\"}"
+    );
+    assert_eq!(reg.read_string(RUN_KEY, APP_ID), None);
+}
+
+#[test]
+fn a_record_outside_the_data_folder_does_not_stop_deleting_it() {
+    let reg = Rc::new(MemoryRegistry::new());
+    let parent = tempfile::tempdir().unwrap();
+    let data = parent.path().join("UsageQuotaTray");
+    std::fs::create_dir_all(&data).unwrap();
+    std::fs::write(data.join("settings.json"), "{}").unwrap();
+    let change = FakeChange::new(&reg, None, false).keeping(parent.path().join("x.json"), "why");
+
+    remove_from_pc_undoing(reg.as_ref(), &[&change], Some(&data), true).unwrap();
+    assert!(!data.exists());
 }
 
 #[test]
@@ -253,26 +319,172 @@ fn every_running_instance_holds_the_marker_until_it_exits() {
     assert!(SingleInstance::acquire(&name).is_some());
 }
 
+/// The Apps entry Inno Setup writes for our AppId, as an installed copy has it.
+fn apps_entry(reg: &MemoryRegistry, install_dir: &Path, uninstaller: &Path) {
+    reg.write_string(
+        UNINSTALL_KEY,
+        "InstallLocation",
+        &format!("{}\\", install_dir.display()),
+    )
+    .unwrap();
+    reg.write_string(
+        UNINSTALL_KEY,
+        "UninstallString",
+        &format!("\"{}\"", uninstaller.display()),
+    )
+    .unwrap();
+}
+
 #[test]
-fn an_installed_copy_is_recognised_by_the_uninstaller_next_to_the_exe() {
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("usagequotatray.exe"), b"").unwrap();
-    assert_eq!(installed_uninstaller(dir.path()), None);
-
-    std::fs::write(dir.path().join("unins000.dat"), b"").unwrap();
-    std::fs::write(dir.path().join("uninstall-notes.exe"), b"").unwrap();
-    std::fs::create_dir(dir.path().join("unins001.exe")).unwrap();
-    assert_eq!(installed_uninstaller(dir.path()), None);
-
-    std::fs::write(dir.path().join("UNINS000.EXE"), b"").unwrap();
+fn the_apps_entry_key_is_the_one_inno_setup_writes_for_our_app_id() {
     assert_eq!(
-        installed_uninstaller(dir.path()),
-        Some(dir.path().join("UNINS000.EXE"))
+        UNINSTALL_KEY,
+        r"Software\Microsoft\Windows\CurrentVersion\Uninstall\{9C02A488-5E56-4016-835D-BE4F735473FD}_is1"
     );
 }
 
 #[test]
-fn a_missing_folder_has_no_uninstaller() {
+fn an_installed_copy_is_recognised_by_the_apps_entry_for_its_folder() {
+    let reg = MemoryRegistry::new();
     let dir = tempfile::tempdir().unwrap();
-    assert_eq!(installed_uninstaller(&dir.path().join("gone")), None);
+    let uninstaller = dir.path().join("unins001.exe");
+    std::fs::write(&uninstaller, b"").unwrap();
+    // A guess by file name alone is not enough.
+    std::fs::write(dir.path().join("unins000.exe"), b"").unwrap();
+    assert_eq!(installed_uninstaller(&reg, dir.path()), None);
+
+    apps_entry(&reg, dir.path(), &uninstaller);
+    assert_eq!(installed_uninstaller(&reg, dir.path()), Some(uninstaller));
+}
+
+#[test]
+fn the_apps_entry_is_matched_ignoring_case_and_a_trailing_backslash() {
+    let reg = MemoryRegistry::new();
+    let dir = tempfile::tempdir().unwrap();
+    let uninstaller = dir.path().join("unins000.exe");
+    std::fs::write(&uninstaller, b"").unwrap();
+    let upper = Path::new(&dir.path().display().to_string().to_uppercase()).to_path_buf();
+    apps_entry(&reg, &upper, &uninstaller);
+    reg.write_string(
+        UNINSTALL_KEY,
+        "UninstallString",
+        &format!("\"{}\" /LOG", uninstaller.display()),
+    )
+    .unwrap();
+    assert_eq!(installed_uninstaller(&reg, dir.path()), Some(uninstaller));
+}
+
+#[test]
+fn a_copy_in_another_folder_than_the_installed_one_has_no_uninstaller() {
+    let reg = MemoryRegistry::new();
+    let installed = tempfile::tempdir().unwrap();
+    let zip_copy = tempfile::tempdir().unwrap();
+    let uninstaller = installed.path().join("unins000.exe");
+    std::fs::write(&uninstaller, b"").unwrap();
+    std::fs::write(zip_copy.path().join("unins000.exe"), b"").unwrap();
+    apps_entry(&reg, installed.path(), &uninstaller);
+    assert_eq!(installed_uninstaller(&reg, zip_copy.path()), None);
+}
+
+#[test]
+fn an_apps_entry_whose_uninstaller_is_gone_has_no_uninstaller() {
+    let reg = MemoryRegistry::new();
+    let dir = tempfile::tempdir().unwrap();
+    apps_entry(&reg, dir.path(), &dir.path().join("unins000.exe"));
+    assert_eq!(installed_uninstaller(&reg, dir.path()), None);
+    assert_eq!(installed_uninstaller(&reg, &dir.path().join("gone")), None);
+}
+
+/// Names no real tray uses, unique to one test.
+fn quit_names(test: &str) -> (String, String) {
+    let id = format!("{}-{test}", std::process::id());
+    (
+        format!("UsageQuotaTray-test-quit-{id}"),
+        format!("UsageQuotaTray-test-running-{id}"),
+    )
+}
+
+#[test]
+fn the_quit_request_has_the_name_the_installer_uses() {
+    assert_eq!(QUIT_EVENT, "UsageQuotaTray.Quit");
+}
+
+#[test]
+fn a_quit_request_reaches_a_running_loop_which_then_exits() {
+    let (event, running) = quit_names("reaches");
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let tray = {
+        let (event, running) = (event.clone(), running.clone());
+        std::thread::spawn(move || {
+            // A stand-in for the tray: holds the marker until asked to quit.
+            let marker = RunningMarker::hold(&running).expect("marker");
+            let (quit_tx, quit_rx) = std::sync::mpsc::channel();
+            let listener = QuitListener::spawn(&event, move || {
+                let _ = quit_tx.send(());
+            })
+            .expect("listener");
+            ready_tx.send(()).unwrap();
+            let asked = quit_rx.recv_timeout(Duration::from_secs(10)).is_ok();
+            drop(listener);
+            drop(marker);
+            asked
+        })
+    };
+    ready_rx.recv().unwrap();
+
+    let outcome = request_quit(&event, &running, Duration::from_secs(10));
+
+    assert_eq!(outcome, QuitOutcome::Closed);
+    assert!(tray.join().unwrap(), "the loop saw the quit request");
+}
+
+#[test]
+fn a_quit_request_with_no_tray_running_is_done_at_once() {
+    let (event, running) = quit_names("none");
+    let started = Instant::now();
+    assert_eq!(
+        request_quit(&event, &running, Duration::from_secs(10)),
+        QuitOutcome::NoneRunning
+    );
+    assert!(started.elapsed() < Duration::from_secs(1));
+}
+
+#[test]
+fn a_tray_that_does_not_close_in_time_is_reported_still_running() {
+    let (event, running) = quit_names("timeout");
+    // Holds the marker but never listens.
+    let _marker = RunningMarker::hold(&running).expect("marker");
+    let started = Instant::now();
+
+    let outcome = request_quit(&event, &running, Duration::from_millis(300));
+
+    assert_eq!(outcome, QuitOutcome::StillRunning);
+    assert!(started.elapsed() >= Duration::from_millis(300));
+}
+
+#[test]
+fn a_quit_request_is_not_left_behind_for_the_next_tray() {
+    let (event, running) = quit_names("reset");
+    {
+        let _marker = RunningMarker::hold(&running).expect("marker");
+        request_quit(&event, &running, Duration::from_millis(100));
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    let _listener = QuitListener::spawn(&event, move || {
+        let _ = tx.send(());
+    })
+    .expect("listener");
+    assert!(rx.recv_timeout(Duration::from_millis(300)).is_err());
+}
+
+#[test]
+fn stopping_the_listener_does_not_report_a_quit() {
+    let (event, _) = quit_names("stop");
+    let (tx, rx) = std::sync::mpsc::channel();
+    let listener = QuitListener::spawn(&event, move || {
+        let _ = tx.send(());
+    })
+    .expect("listener");
+    drop(listener);
+    assert!(rx.try_recv().is_err());
 }

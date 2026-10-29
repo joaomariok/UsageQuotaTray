@@ -1,12 +1,14 @@
-//! The headless command line the installer's uninstaller runs:
-//! `usagequotatray.exe --remove-from-pc [--delete-data]`.
+//! The headless command line the installer runs: `usagequotatray.exe --quit` before an
+//! upgrade or uninstall, and `--remove-from-pc [--delete-data]` when uninstalling.
 
 use std::cell::Cell;
 use std::path::Path;
+use std::time::Duration;
 
 use uqt_app::cli::{self, Command};
 use uqt_ui::lifecycle::{
-    APP_ID, AUMID_KEY, MemoryRegistry, OutsideChange, RUN_KEY, Registry, register_notifications,
+    APP_ID, AUMID_KEY, MemoryRegistry, OutsideChange, QuitListener, RUN_KEY, Registry,
+    RunningMarker, register_notifications,
 };
 
 fn parse(args: &[&str]) -> Result<Command, String> {
@@ -135,4 +137,54 @@ fn nothing_pending_is_not_undone() {
         cli::EXIT_REMOVED
     );
     assert!(!change.undone.get());
+}
+
+#[test]
+fn quit_asks_the_running_tray_to_exit() {
+    assert_eq!(parse(&["--quit"]), Ok(Command::Quit));
+    assert!(parse(&["--quit", "--remove-from-pc"]).is_err());
+    assert!(parse(&["--remove-from-pc", "--quit"]).is_err());
+    assert!(parse(&["--quit", "--delete-data"]).is_err());
+}
+
+#[test]
+fn quit_exits_zero_with_no_tray_and_non_zero_when_one_stays() {
+    let id = std::process::id();
+    let event = format!("UsageQuotaTray-test-cli-quit-{id}");
+    let running = format!("UsageQuotaTray-test-cli-running-{id}");
+    assert_eq!(
+        cli::quit(&event, &running, Duration::from_secs(5)),
+        cli::EXIT_REMOVED
+    );
+
+    let _tray = RunningMarker::hold(&running).expect("marker");
+    let code = cli::quit(&event, &running, Duration::from_millis(200));
+    assert_eq!(code, cli::EXIT_STILL_RUNNING);
+    assert_ne!(code, 0);
+}
+
+#[test]
+fn quit_exits_zero_once_the_tray_has_closed() {
+    let id = std::process::id();
+    let event = format!("UsageQuotaTray-test-cli-quit-closed-{id}");
+    let running = format!("UsageQuotaTray-test-cli-running-closed-{id}");
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let tray = {
+        let (event, running) = (event.clone(), running.clone());
+        std::thread::spawn(move || {
+            let marker = RunningMarker::hold(&running).expect("marker");
+            let (tx, rx) = std::sync::mpsc::channel();
+            let listener = QuitListener::spawn(&event, move || {
+                let _ = tx.send(());
+            })
+            .expect("listener");
+            ready_tx.send(()).unwrap();
+            let _ = rx.recv_timeout(Duration::from_secs(10));
+            drop(listener);
+            drop(marker);
+        })
+    };
+    ready_rx.recv().unwrap();
+    assert_eq!(cli::quit(&event, &running, Duration::from_secs(10)), 0);
+    tray.join().unwrap();
 }

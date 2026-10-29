@@ -396,8 +396,10 @@ pub(crate) fn apply_edit(edit: SettingsEdit) {
 /// "Remove UsageQuotaTray from this PC", after the user confirms: first undoes the
 /// changes made to other programs' files (the statusline helper), then deletes the
 /// app's entries; then quits. When undoing fails nothing is deleted and the app stays.
-/// An installed copy hands over to the installer's uninstaller instead, which asks its
-/// own questions and runs the same removal headless.
+/// An installed copy hands over to the installer's uninstaller instead, without asking
+/// and without quitting: the uninstaller asks its own questions, closes this tray
+/// (`--quit`) and runs the same removal headless. Cancelling there leaves the tray
+/// running.
 pub(crate) fn remove_from_pc(delete_data: bool) {
     let owner = settings_window::hwnd();
     let exe_dir = with_ui(|ui| ui.exe.clone())
@@ -405,19 +407,15 @@ pub(crate) fn remove_from_pc(delete_data: bool) {
         .and_then(|e| e.parent().map(|p| p.to_path_buf()));
     if let Some(uninstaller) = exe_dir
         .as_deref()
-        .and_then(lifecycle::installed_uninstaller)
+        .and_then(|dir| lifecycle::installed_uninstaller(&CurrentUserRegistry, dir))
     {
         log::info!("starting the uninstaller {}", uninstaller.display());
-        match std::process::Command::new(&uninstaller).spawn() {
-            Ok(_) => {
-                with_ui(|ui| ui.store = None);
-                let _ = slint::quit_event_loop();
-            }
-            Err(e) => platform::show_error(
+        if let Err(e) = std::process::Command::new(&uninstaller).spawn() {
+            platform::show_error(
                 owner,
                 "Remove UsageQuotaTray",
                 &format!("Could not start the uninstaller: {e}"),
-            ),
+            );
         }
         return;
     }
@@ -651,6 +649,17 @@ pub fn run(engine: Engine, clock: Arc<dyn Clock>, options: ShellOptions) -> Resu
 
     #[cfg(feature = "dev-hooks")]
     let dev_timers = dev_hooks::timers(&popup, &style_timer, &options.dev);
+
+    // `usagequotatray.exe --quit`: the installer closes the tray before an upgrade or
+    // uninstall, as "Exit" does. Kept until the event loop ends.
+    let _quit = lifecycle::QuitListener::spawn(lifecycle::QUIT_EVENT, || {
+        let _ = slint::invoke_from_event_loop(|| {
+            log::info!("asked to quit (--quit)");
+            let _ = slint::quit_event_loop();
+        });
+    })
+    .map_err(|e| log::warn!("quit requests not heard: {e}"))
+    .ok();
 
     slint::run_event_loop_until_quit().map_err(|e| e.to_string())?;
 

@@ -64,6 +64,19 @@ impl OutsideChange for StatuslineChange {
         log::info!("statusline helper uninstalled before removal ({outcome:?})");
         Ok(())
     }
+
+    /// The installation record, while it is another copy's helper's: that helper reads
+    /// it for the command it chains, and only that copy can put the statusLine back.
+    fn kept_in_data(&self) -> Option<(PathBuf, String)> {
+        let command = self.0.record_of_another_helper()?;
+        Some((
+            self.0.state_file.clone(),
+            format!(
+                "it records Claude Code's statusLine helper of another UsageQuotaTray copy \
+                 ({command}), which still needs it; remove that copy from its own Settings"
+            ),
+        ))
+    }
 }
 
 /// What the statusline helper does with one input from Claude Code, returning what
