@@ -252,7 +252,7 @@ fn tooltip(state: &EngineState, at: Moment) -> String {
             {
                 lines.push(problem_line(p));
             }
-            for m in acc.meters.iter().filter(|m| !m.unrecognized) {
+            for m in featured(acc).filter(|m| !m.unrecognized) {
                 lines.push(tooltip_line(m, at));
             }
         }

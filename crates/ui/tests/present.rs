@@ -131,12 +131,30 @@ fn tooltip_lists_the_meters_with_percentage_and_reset() {
     stale.freshness = Freshness::Stale;
     let s = state(
         vec![meter("session", 42.0, Some(100.0), Unit::Percent), stale],
-        &["session"],
+        &["session", "weekly"],
     );
     assert_eq!(
         present::tray(&s, moment()).tooltip,
         "Test Assistant \u{b7} Work\nsession 42% \u{b7} resets in 2 h 5 min\nweekly 71% (as of 12:57)"
     );
+}
+
+#[test]
+fn tooltip_lists_only_the_featured_meters_in_ring_order() {
+    let s = state(
+        vec![
+            meter("session", 42.0, Some(100.0), Unit::Percent),
+            meter("weekly", 22.0, Some(100.0), Unit::Percent),
+            meter("opus", 0.0, Some(100.0), Unit::Percent),
+        ],
+        &["weekly", "session"],
+    );
+    let tooltip = present::tray(&s, moment()).tooltip;
+    assert_eq!(
+        tooltip,
+        "Test Assistant \u{b7} Work\nweekly 22% \u{b7} resets in 2 h 5 min\nsession 42% \u{b7} resets in 2 h 5 min"
+    );
+    assert!(!tooltip.contains("opus"), "{tooltip}");
 }
 
 #[test]
@@ -151,7 +169,9 @@ fn tooltip_never_exceeds_the_windows_limit() {
             )
         })
         .collect();
-    let tip = present::tray(&state(meters, &[]), moment()).tooltip;
+    let keys: Vec<String> = (0..20).map(|i| format!("meter number {i}")).collect();
+    let featured: Vec<&str> = keys.iter().map(String::as_str).collect();
+    let tip = present::tray(&state(meters, &featured), moment()).tooltip;
     assert!(tip.encode_utf16().count() <= 127, "{}", tip.len());
     assert!(tip.ends_with('\u{2026}'));
 }
