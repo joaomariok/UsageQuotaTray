@@ -306,8 +306,10 @@ pub fn settings_view(
                 row.can_move_up = row.position.is_some_and(|p| p > 1);
                 row.can_move_down = row.position.is_some_and(|p| p < featured.len());
                 row.checked = row.position.is_some();
-                row.enabled = row.checked || featured.len() < MAX_FEATURED;
                 row.editable = m.limit.is_some();
+                // The icon draws a share of a Limit, so a Meter without one cannot be
+                // checked; one Featured earlier can still be unchecked.
+                row.enabled = row.checked || (row.editable && featured.len() < MAX_FEATURED);
                 row.placeholder = thresholds_text(&DEFAULT_THRESHOLDS);
                 if row.editable {
                     let t = settings.thresholds(a.id, &acc.id, &m.key);
@@ -315,7 +317,9 @@ pub fn settings_view(
                         row.text = thresholds_text(&t);
                     }
                 } else {
-                    row.detail = "This Meter has no limit, so no alerts.".into();
+                    row.detail =
+                        "This Meter has no limit, so no alerts and no place on the tray icon."
+                            .into();
                 }
                 rows.push(row);
             }

@@ -317,10 +317,15 @@ fn draw_badge(
 }
 
 /// Marks the top-right corner with a red dot inside a transparent halo, so it reads
-/// on top of the rings on any taskbar.
-fn draw_dot(pm: &mut Pixmap) {
+/// on top of the rings on any taskbar. Numbers fill the whole icon, so on them the dot
+/// is small and clears nothing: it covers only a digit's corner cell.
+fn draw_dot(pm: &mut Pixmap, on_numbers: bool) {
     let s = pm.width() as f32;
-    let r = (s * 0.2).max(2.5);
+    let r = if on_numbers {
+        (s * 0.11).max(1.5)
+    } else {
+        (s * 0.2).max(2.5)
+    };
     let (cx, cy) = (s - r - 0.5, r + 0.5);
     let fill = |pm: &mut Pixmap, radius: f32, paint: &Paint<'_>| {
         if let Some(c) = PathBuilder::from_circle(cx, cy, radius) {
@@ -332,7 +337,9 @@ fn draw_dot(pm: &mut Pixmap) {
         blend_mode: resvg::tiny_skia::BlendMode::Clear,
         ..Paint::default()
     };
-    fill(pm, r + 1.0, &clear);
+    if !on_numbers {
+        fill(pm, r + 1.0, &clear);
+    }
     let mut red = Paint {
         anti_alias: true,
         ..Paint::default()
@@ -393,7 +400,8 @@ pub fn render_gauge(
 ) -> Vec<u8> {
     let mut pm = render_pixmap(size, rings, badge_svg, style, look);
     if dot {
-        draw_dot(&mut pm);
+        let on_numbers = matches!(look.gauge, Gauge::Number | Gauge::StackedNumbers);
+        draw_dot(&mut pm, on_numbers);
     }
     pm.pixels()
         .iter()

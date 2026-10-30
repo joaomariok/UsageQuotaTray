@@ -463,3 +463,30 @@ fn the_badge_switch_is_off_limits_for_number_gauges() {
         assert_eq!(v.badge_enabled, room, "{gauge:?}");
     }
 }
+
+#[test]
+fn a_meter_without_a_limit_cannot_be_featured() {
+    let v = settings_view(
+        &catalog(true, true),
+        &state(&["a"]),
+        &Settings::default(),
+        false,
+    );
+    let credits = row(&v, "credits label");
+    assert!(!credits.checked && !credits.enabled);
+    assert!(credits.detail.contains("tray icon"), "{}", credits.detail);
+    // There is still a free slot for a Meter that has a limit.
+    assert!(row(&v, "b label").enabled);
+}
+
+#[test]
+fn a_meter_without_a_limit_featured_earlier_can_still_be_unchecked() {
+    let v = settings_view(
+        &catalog(true, true),
+        &state(&["credits"]),
+        &Settings::default(),
+        false,
+    );
+    let credits = row(&v, "credits label");
+    assert!(credits.checked && credits.enabled);
+}

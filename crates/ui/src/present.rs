@@ -142,23 +142,22 @@ pub fn tray(state: &EngineState, at: Moment) -> TrayView {
     }
     let shown = shown.or_else(|| candidates().next());
     let rings = shown.map_or_else(Vec::new, |(_, acc)| {
+        // A Meter without a Limit has no fraction to draw, but keeps its place so the
+        // first Featured Meter is always the outer ring, the top bar and the number.
         featured(acc)
-            .filter_map(|m| {
-                let fraction = m.fraction()?;
-                Some(match m.freshness {
-                    Freshness::PastReset => Ring {
-                        fraction: 0.0,
-                        tone: Tone::Grey,
-                    },
-                    Freshness::Stale => Ring {
-                        fraction: fraction as f32,
-                        tone: Tone::Grey,
-                    },
-                    Freshness::Fresh => Ring {
-                        fraction: fraction as f32,
-                        tone: band(fraction),
-                    },
-                })
+            .map(|m| match (m.fraction(), m.freshness) {
+                (None, _) | (_, Freshness::PastReset) => Ring {
+                    fraction: 0.0,
+                    tone: Tone::Grey,
+                },
+                (Some(fraction), Freshness::Stale) => Ring {
+                    fraction: fraction as f32,
+                    tone: Tone::Grey,
+                },
+                (Some(fraction), Freshness::Fresh) => Ring {
+                    fraction: fraction as f32,
+                    tone: band(fraction),
+                },
             })
             .take(2)
             .collect()

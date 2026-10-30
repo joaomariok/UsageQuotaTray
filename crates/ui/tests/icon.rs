@@ -408,3 +408,39 @@ fn the_holes_in_digits_stay_open_at_16_px() {
         );
     }
 }
+
+#[test]
+fn on_numbers_the_dot_is_small_and_clears_nothing() {
+    let size = 16;
+    let rings = [ring(0.88, Tone::Green), ring(0.77, Tone::Green)];
+    for g in [Gauge::Number, Gauge::StackedNumbers] {
+        let draw = |dot| {
+            render_gauge(
+                size,
+                &rings,
+                BADGE,
+                IconStyle::DarkTaskbar,
+                dot,
+                look(g, false),
+            )
+        };
+        let (plain, dotted) = (draw(false), draw(true));
+        let changed: Vec<usize> = (0..(size * size) as usize)
+            .filter(|i| plain[i * 4..i * 4 + 4] != dotted[i * 4..i * 4 + 4])
+            .collect();
+        assert!(!changed.is_empty(), "{g:?}: the dot shows");
+        assert!(
+            changed.len() <= 16,
+            "{g:?}: {} pixels changed",
+            changed.len()
+        );
+        for &i in &changed {
+            let (x, y) = ((i as u32) % size, (i as u32) / size);
+            assert!(
+                x >= size - 5 && y < 5,
+                "{g:?}: ({x}, {y}) outside the corner"
+            );
+            assert!(dotted[i * 4 + 3] > 0, "{g:?}: ({x}, {y}) was cleared");
+        }
+    }
+}

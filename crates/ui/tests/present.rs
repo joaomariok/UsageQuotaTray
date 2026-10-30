@@ -126,6 +126,23 @@ fn stale_rings_are_grey_but_keep_their_value_and_reset_rings_are_empty() {
 }
 
 #[test]
+fn a_featured_meter_without_a_limit_keeps_its_place_as_an_empty_grey_ring() {
+    let s = state(
+        vec![
+            meter("credits", 12.5, None, Unit::Currency("BRL".into())),
+            meter("session", 42.0, Some(100.0), Unit::Percent),
+        ],
+        &["credits", "session"],
+    );
+    let rings: Vec<(f32, Tone)> = present::tray(&s, moment())
+        .rings
+        .iter()
+        .map(|r| (r.fraction, r.tone))
+        .collect();
+    assert_eq!(rings, vec![(0.0, Tone::Grey), (0.42, Tone::Green)]);
+}
+
+#[test]
 fn tooltip_lists_the_meters_with_percentage_and_reset() {
     let mut stale = meter("weekly", 71.0, Some(100.0), Unit::Percent);
     stale.freshness = Freshness::Stale;
