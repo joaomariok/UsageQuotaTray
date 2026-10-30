@@ -79,18 +79,11 @@ cargo build --release
 
 Slint's build paths are long. If the repo sits in a deeply nested folder and the build fails on `MAX_PATH`, set `CARGO_TARGET_DIR` to a short path.
 
-The gate, run each separately; all four must pass:
-
-```powershell
-cargo fmt --all --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-cargo deny check
-```
+The gate is `pwsh tools/gate.ps1`: fmt, clippy, tests and `cargo deny`, stopping at the first failure. CI runs the same script on every push and pull request to main.
 
 Tests use fake transports and recorded fixtures; they never call a real host.
 
-Development switches are compiled in only with the `dev-hooks` feature (`cargo build --features dev-hooks`); a normal build ignores every `UQT_*` variable. Debug builds always add the Fake Assistant. With the feature: `UQT_CLAUDE_CODE=0` leaves out the Claude Code module, `UQT_FAKE_ASSISTANT=1` adds the Fake Assistant, `UQT_FAKE_FAIL=offline|expired|not-logged-in|changed|rate-limited` makes it fail, `UQT_NOTIFICATIONS=off` skips the notification registration and toasts, and `UQT_READY_FILE`, `UQT_ICON_CHURN=1` and `UQT_SHOT=popup|settings` drive measurement and screenshot runs. For a safe manual run, use a `dev-hooks` build with `UQT_CLAUDE_CODE=0` and `UQT_NOTIFICATIONS=off`, and point `LOCALAPPDATA` at a throwaway folder. `tools/measure/measure.ps1` builds such an exe when given no `-Exe`.
+Development switches are compiled in only with the `dev-hooks` feature (`cargo build --features dev-hooks`); a normal build ignores every `UQT_*` variable. Debug builds always add the Fake Assistant. With the feature: `UQT_CLAUDE_CODE=0` leaves out the Claude Code module, `UQT_FAKE_ASSISTANT=1` adds the Fake Assistant, `UQT_FAKE_FAIL=offline|expired|not-logged-in|changed|rate-limited` makes it fail, `UQT_NOTIFICATIONS=off` skips the notification registration and toasts, and `UQT_READY_FILE`, `UQT_ICON_CHURN=1` and `UQT_SHOT=popup|settings` drive measurement and screenshot runs. For a safe manual run, use a `dev-hooks` build with `UQT_CLAUDE_CODE=0` and `UQT_NOTIFICATIONS=off`, and point `LOCALAPPDATA` at a throwaway folder. `tools/measure/measure.ps1` builds such an exe when given no `-Exe`. `tools/shot/shot.ps1` screenshots the popup or the settings window of a debug `dev-hooks` build, plus the taskbar with the tray icon.
 
 ## Packaging
 

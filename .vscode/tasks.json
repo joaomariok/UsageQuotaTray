@@ -35,9 +35,9 @@
     {
       "label": "gate",
       "detail": "fmt check, clippy -D warnings, tests, cargo deny",
-      "type": "shell",
-      "command": "cargo fmt --all --check; if ($?) { cargo clippy --workspace --all-targets -- -D warnings }; if ($?) { cargo test --workspace }; if ($?) { cargo deny check }",
-      "options": { "shell": { "executable": "pwsh", "args": ["-NoProfile", "-Command"] } },
+      "type": "process",
+      "command": "pwsh",
+      "args": ["-NoProfile", "-File", "${workspaceFolder}/tools/gate.ps1"],
       "group": "test",
       "problemMatcher": ["$rustc"]
     }

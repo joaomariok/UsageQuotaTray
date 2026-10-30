@@ -1,5 +1,7 @@
 # UsageQuotaTray
 
+The gate is `pwsh tools/gate.ps1`. To see a UI change, screenshot it with `tools/shot/shot.ps1`.
+
 ## Agent skills
 
 ### Issue tracker

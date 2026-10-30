@@ -78,10 +78,7 @@ All in the app and workspace config; no changes to `crates/core` or `crates/ui`:
 ## 7. Run the gate
 
 ```powershell
-cargo fmt --all --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-cargo deny check
+pwsh tools/gate.ps1
 ```
 
 Slint's build paths are long. If the repo sits in a deeply nested folder and the build fails on `MAX_PATH`, set `CARGO_TARGET_DIR` to a short path.
