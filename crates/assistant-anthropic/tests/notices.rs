@@ -149,6 +149,16 @@ fn no_shared_quota_notice_without_a_subscription() {
 }
 
 #[test]
+fn no_shared_quota_notice_for_a_subscription_without_included_usage() {
+    let f = folder(
+        r#", "subscriptionType": "enterprise", "rateLimitTier": "default_claude_zero""#,
+        r#", "seatTier": "enterprise_usage_based", "hasExtraUsageEnabled": true"#,
+    );
+    let body = include_str!("fixtures/usage-credits-only.json");
+    assert!(notices(&f.dir, FakeEnv::default(), body).is_empty());
+}
+
+#[test]
 fn an_api_key_in_any_environment_is_noticed() {
     for scope in [EnvScope::Process, EnvScope::User, EnvScope::Machine] {
         let f = folder("", "");

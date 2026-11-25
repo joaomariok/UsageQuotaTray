@@ -42,8 +42,9 @@ pub(crate) struct Usage {
     pub credits_enabled: Option<bool>,
 }
 
-/// The usage in a response, or `None` when it has neither the 5-hour nor the Weekly
-/// value in any known shape.
+/// The usage in a response, or `None` when it has no Meter in any known shape, or has
+/// Windows but neither the 5-hour nor the Weekly one can be read. An Account can have
+/// credits and no Windows at all (a usage-based Enterprise seat).
 pub(crate) fn parse(body: &[u8]) -> Option<Usage> {
     let json: Value = serde_json::from_slice(body).ok()?;
     if !json.is_object() {
@@ -76,11 +77,17 @@ pub(crate) fn parse(body: &[u8]) -> Option<Usage> {
         });
 
     let mut values: Vec<MeterValue> = [session, weekly].into_iter().flatten().collect();
-    if values.is_empty() {
+    // Credits alone are enough only when there are no Windows to read: an Account with
+    // both must still report Windows that moved.
+    if values.is_empty() && !has_no_windows(&json) {
         return None;
     }
     values.extend(model_weekly(&json));
     values.extend(usage_credits(&json));
+    // Unrecognized Meters alone are more likely a changed endpoint than an Account.
+    if values.is_empty() {
+        return None;
+    }
     values.extend(unrecognized(&json));
     log_raw_signals(&json);
     let credits_enabled = json["spend"]["enabled"]
@@ -90,6 +97,15 @@ pub(crate) fn parse(body: &[u8]) -> Option<Usage> {
         values,
         credits_enabled,
     })
+}
+
+/// Whether the response says the Account has no Windows, rather than giving them in an
+/// unknown shape.
+fn has_no_windows(json: &Value) -> bool {
+    let limits = &json["limits"];
+    json["five_hour"].is_null()
+        && json["seven_day"].is_null()
+        && (limits.is_null() || limits.as_array().is_some_and(Vec::is_empty))
 }
 
 fn percent_meter(

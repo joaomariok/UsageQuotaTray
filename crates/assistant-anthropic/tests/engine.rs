@@ -637,6 +637,89 @@ fn no_usage_credits_meter_while_credits_are_disabled() {
     );
 }
 
+// ---- Credit-only Accounts ----------------------------------------------------------
+
+/// The shape recorded from a usage-based Enterprise seat: no Windows, only credits.
+const CREDITS_ONLY: &str = include_str!("fixtures/usage-credits-only.json");
+
+#[test]
+fn an_account_with_only_credits_shows_and_features_them() {
+    let mut h = Harness::logged_in();
+    h.transport.push_response(ok(CREDITS_ONLY));
+    h.engine.tick();
+    let credits = h.meter(keys::USAGE_CREDITS);
+    assert_eq!(credits.used, 123.45);
+    assert_eq!(credits.limit, Some(400.0));
+    assert_eq!(credits.unit, Unit::Currency("USD".into()));
+    assert_eq!(credits.window, None);
+
+    let state = h.engine.state();
+    let account = &state.assistants[0].accounts[0];
+    assert_eq!(account.problem, None);
+    assert_eq!(account.meters.len(), 1);
+    assert_eq!(account.featured, vec![keys::USAGE_CREDITS.to_string()]);
+}
+
+#[test]
+fn an_account_with_only_credits_and_no_limit_still_shows_them() {
+    let mut h = Harness::logged_in();
+    h.transport.push_response(ok(r#"{
+      "five_hour": null, "seven_day": null, "limits": [],
+      "spend": {"used": {"amount_minor": 1234, "currency": "USD", "exponent": 2},
+                "limit": null, "enabled": true}
+    }"#));
+    h.engine.tick();
+    let credits = h.meter(keys::USAGE_CREDITS);
+    assert_eq!(credits.used, 12.34);
+    assert_eq!(credits.limit, None);
+    assert_eq!(h.engine.state().assistants[0].accounts[0].problem, None);
+}
+
+/// An Account with both Windows and credits (a Max plan with credits on).
+#[test]
+fn readable_credits_do_not_hide_windows_that_cannot_be_read() {
+    let credits = r#""spend": {"used": {"amount_minor": 1234, "currency": "USD", "exponent": 2},
+        "limit": null, "enabled": true}"#;
+    for windows in [
+        r#""five_hour": {"pct": 10}, "seven_day": null, "limits": []"#,
+        r#""five_hour": null, "seven_day": {"pct": 10}"#,
+        r#""limits": "moved""#,
+        r#""limits": [{"kind": "session", "pct": 10}]"#,
+    ] {
+        let mut h = Harness::logged_in();
+        h.transport
+            .push_response(ok(&format!("{{{windows}, {credits}}}")));
+        h.engine.tick();
+        assert_eq!(h.problem().error, FetchError::EndpointChanged, "{windows}");
+        let state = h.engine.state();
+        assert!(state.assistants[0].accounts[0].meters.is_empty());
+    }
+}
+
+#[test]
+fn an_account_with_windows_and_credits_shows_both_and_features_the_windows() {
+    let h = recorded();
+    assert_eq!(h.meter(keys::USAGE_CREDITS).limit, Some(100.0));
+    let state = h.engine.state();
+    let account = &state.assistants[0].accounts[0];
+    assert_eq!(account.problem, None);
+    assert_eq!(
+        account.featured,
+        vec![keys::SESSION.to_string(), keys::WEEKLY.to_string()]
+    );
+}
+
+#[test]
+fn unrecognized_meters_alone_mean_the_endpoint_changed() {
+    let mut h = Harness::logged_in();
+    h.transport.push_response(ok(
+        r#"{"iguana_necktie": {"utilization": 5.0, "resets_at": "2026-11-05T07:59:00Z"}}"#,
+    ));
+    h.engine.tick();
+    assert_eq!(h.problem().error, FetchError::EndpointChanged);
+    assert!(h.engine.state().assistants[0].accounts[0].meters.is_empty());
+}
+
 // ---- Unrecognized keys -------------------------------------------------------------
 
 #[test]

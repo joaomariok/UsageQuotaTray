@@ -17,7 +17,8 @@ pub trait Assistant: Send {
     /// Hosts the module's Sources may call through the [`HostClient`]; nothing else.
     fn allowed_hosts(&self) -> &[&'static str];
     fn badge(&self) -> BadgeSpec;
-    /// Up to two Meter keys featured on the tray icon until the user chooses.
+    /// Up to two Meter keys featured on the tray icon until the user chooses. An Account
+    /// with none of them features its first recognized Meters instead.
     fn suggested_featured(&self) -> Vec<MeterKey>;
     /// The maker's usage page, if any.
     fn usage_page(&self) -> Option<&str>;

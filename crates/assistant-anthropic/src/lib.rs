@@ -395,8 +395,8 @@ impl UsageSource {
 }
 
 /// The Account's Notices after a successful fetch: the shared quota (for a
-/// subscription, with this week's Breakdown), an API key that takes over billing, and
-/// a reached included limit while usage credits are enabled.
+/// subscription with included usage, with this week's Breakdown), an API key that takes
+/// over billing, and a reached included limit while usage credits are enabled.
 fn notices(
     plan: &Plan,
     credits_enabled: Option<bool>,
@@ -404,7 +404,7 @@ fn notices(
     api_key_places: &[&str],
 ) -> Vec<Notice> {
     let mut out = Vec::new();
-    if plan.is_subscription() {
+    if plan.is_subscription() && values.iter().any(is_included) {
         let mut text = "Included usage is shared with Claude chat and Cowork".to_string();
         let split = values
             .iter()
@@ -429,18 +429,20 @@ fn notices(
             ),
         });
     }
-    let included_reached = values.iter().any(|v| {
-        let included = v.key == keys::SESSION
-            || v.key == keys::WEEKLY
-            || v.key.starts_with(keys::WEEKLY_MODEL_PREFIX);
-        included && v.limit.is_some_and(|l| v.used >= l)
-    });
+    let included_reached = values
+        .iter()
+        .any(|v| is_included(v) && v.limit.is_some_and(|l| v.used >= l));
     if included_reached && credits_enabled == Some(true) {
         out.push(Notice {
             text: "An included limit was reached; usage credits may apply".into(),
         });
     }
     out
+}
+
+/// Whether a Meter measures usage included in the plan, rather than paid credits.
+fn is_included(v: &MeterValue) -> bool {
+    v.key == keys::SESSION || v.key == keys::WEEKLY || v.key.starts_with(keys::WEEKLY_MODEL_PREFIX)
 }
 
 impl Source for UsageSource {

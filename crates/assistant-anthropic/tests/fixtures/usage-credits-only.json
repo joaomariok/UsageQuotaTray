@@ -1,0 +1,49 @@
+{
+  "amber_cistern": null,
+  "extra_usage": {
+    "credits_can_pay": "unknown",
+    "credits_ever_enabled": true,
+    "currency": "USD",
+    "daily": null,
+    "decimal_places": 2,
+    "disabled_reason": null,
+    "is_enabled": true,
+    "monthly_limit": 40000,
+    "spend_limit_reached": false,
+    "used_credits": 12345.0,
+    "user_disabled": false,
+    "utilization": 30.8625,
+    "weekly": null
+  },
+  "five_hour": null,
+  "iguana_necktie": null,
+  "indicator": null,
+  "limits": [],
+  "member_dashboard_available": true,
+  "message_limit": null,
+  "pace": null,
+  "promo_credits": null,
+  "seven_day": null,
+  "seven_day_breakdown": null,
+  "seven_day_opus": null,
+  "spend": {
+    "auto_reload": null,
+    "balance": null,
+    "can_purchase_credits": false,
+    "can_toggle": false,
+    "cap": {
+      "credits": { "amount_minor": 40000, "exponent": 2 },
+      "money": null
+    },
+    "disabled_reason": null,
+    "disclaimer": "Usage credits cover you when you hit your plan limits.",
+    "enabled": true,
+    "limit": { "amount_minor": 40000, "currency": "USD", "exponent": 2 },
+    "percent": 30,
+    "severity": "normal",
+    "used": { "amount_minor": 12345, "currency": "USD", "exponent": 2 }
+  },
+  "usage_credits_settings_path": null,
+  "usage_scopes": null,
+  "weekly_scoped_shares": null
+}

@@ -13,7 +13,7 @@ use crate::model::{
     AccountInfo, BadgeSpec, Breakdown, Exactness, MeterKey, Notice, Reading, Unit, Window,
 };
 use crate::push::PushMessage;
-use crate::settings::Settings;
+use crate::settings::{MAX_FEATURED, Settings};
 use crate::time::{Clock, Timestamp};
 
 const MINUTE: i64 = 60;
@@ -408,7 +408,7 @@ impl Engine {
                 if !settings.account_enabled(id, &acc.info.id) {
                     continue;
                 }
-                let state = account_state(acc, &[], now, pacing);
+                let state = account_state(acc, now, pacing);
                 for m in &state.meters {
                     let thresholds = settings.thresholds(id, &acc.info.id, &m.key);
                     let kinds = acc.alerts.entry(m.key.clone()).or_default().observe(
@@ -641,11 +641,13 @@ impl Engine {
                     accounts: a
                         .running(&self.settings)
                         .map(|acc| {
-                            let featured = self
-                                .settings
-                                .featured(id, &acc.info.id)
-                                .unwrap_or_else(|| a.module.suggested_featured());
-                            account_state(acc, &featured, now, pacing)
+                            let chosen = self.settings.featured(id, &acc.info.id);
+                            let mut state = account_state(acc, now, pacing);
+                            state.featured = chosen.unwrap_or_else(|| {
+                                featured_by_default(a.module.suggested_featured(), &state.meters)
+                            });
+                            state.featured.truncate(MAX_FEATURED);
+                            state
                         })
                         .collect(),
                 }
@@ -710,12 +712,8 @@ fn backoff(error: &FetchError, failures: u32) -> (i64, Hold) {
     }
 }
 
-fn account_state(
-    acc: &AccountRun,
-    featured: &[MeterKey],
-    now: Timestamp,
-    pacing: Pacing,
-) -> AccountState {
+/// The Account's state with nothing featured yet.
+fn account_state(acc: &AccountRun, now: Timestamp, pacing: Pacing) -> AccountState {
     let rank = |r: &Reading| {
         acc.sources
             .iter()
@@ -763,10 +761,28 @@ fn account_state(
     AccountState {
         id: acc.info.id.clone(),
         display_name: acc.info.display_name.clone(),
-        featured: featured.iter().take(2).cloned().collect(),
+        featured: Vec::new(),
         meters,
         notices: acc.sources.iter().flat_map(|s| s.notices.clone()).collect(),
         problem: acc.sources.iter().find_map(|s| s.problem.clone()),
+    }
+}
+
+/// The module's suggestion, or the recognized Meters in order when the Account has
+/// Meters but none of the suggested ones.
+fn featured_by_default(suggested: Vec<MeterKey>, meters: &[MeterState]) -> Vec<MeterKey> {
+    if meters.iter().any(|m| suggested.contains(&m.key)) {
+        return suggested;
+    }
+    let recognized: Vec<MeterKey> = meters
+        .iter()
+        .filter(|m| !m.unrecognized)
+        .map(|m| m.key.clone())
+        .collect();
+    if recognized.is_empty() {
+        suggested
+    } else {
+        recognized
     }
 }
 
