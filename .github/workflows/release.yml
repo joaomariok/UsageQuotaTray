@@ -1,0 +1,73 @@
+# Publishes a GitHub Release when a version tag is pushed. The tag must match the
+# workspace version and point at a commit on main.
+name: Release
+
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Check the tag
+        shell: pwsh
+        run: |
+          $metadata = cargo metadata --no-deps --format-version 1 | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw 'cargo metadata failed' }
+          $version = ($metadata.packages | Where-Object name -eq 'uqt-app').version
+          if ($env:GITHUB_REF_NAME -cne "v$version") {
+              throw "tag $env:GITHUB_REF_NAME does not match version $version"
+          }
+          git merge-base --is-ancestor HEAD origin/main
+          if ($LASTEXITCODE -ne 0) { throw "tag $env:GITHUB_REF_NAME is not on main" }
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      - name: Gate
+        shell: pwsh
+        run: ./tools/gate.ps1
+      - name: Build the installer and the zip
+        shell: pwsh
+        run: ./tools/installer/build.ps1
+      - name: Write the checksums
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem dist -File | Where-Object Extension -in '.exe', '.zip'
+          if ($files.Count -ne 2) { throw "expected 2 files in dist, found $($files.Count)" }
+          $lines = $files | ForEach-Object {
+              "$((Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)"
+          }
+          [IO.File]::WriteAllText("$PWD/dist/SHA256SUMS.txt", ($lines -join "`n") + "`n")
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release
+          path: dist/
+          if-no-files-found: error
+
+  # The only job that can write, so it runs no repository code and no third-party action.
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: release
+          path: dist
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --title "$GITHUB_REF_NAME" --generate-notes

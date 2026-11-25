@@ -91,6 +91,17 @@ Ship `usagequotatray.exe` and `uqt-statusline.exe` side by side in one folder (b
 
 `tools/installer/build.ps1` builds the release exes and writes both downloads to `dist\`: the installer (needs [Inno Setup 6](https://jrsoftware.org/isinfo.php); `ISCC.exe` is found with `-Iscc`, on `PATH` or from its install) and the zip. `tools/installer/smoke.ps1` installs silently into a temporary folder, checks the files, Run value, shortcut and Apps entry, uninstalls, and checks they are gone. It uses the real current user's registry and Start menu, so it refuses to run if UsageQuotaTray is installed, running or set to start with Windows, and it never touches Claude Code's settings or your app data.
 
+## Releasing
+
+Set the version in `Cargo.toml` (and `Cargo.lock`), land it on main, then push a matching tag:
+
+```powershell
+git tag v<version>
+git push origin v<version>
+```
+
+The Release workflow checks that the tag matches the version and is on main, runs the gate, builds both downloads and publishes them with their SHA-256 checksums as a GitHub Release. Nothing is published if any step fails.
+
 ## License and attribution
 
 UsageQuotaTray is MIT licensed; see [LICENSE](LICENSE). The UI uses [Slint](https://slint.dev) under its royalty-free license, which requires this attribution badge on a public page:
